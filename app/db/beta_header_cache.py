@@ -18,7 +18,7 @@ class BetaHeaderConfigCache:
     _instance: Optional["BetaHeaderConfigCache"] = None
     _lock = threading.Lock()
 
-    def __init__(self, refresh_interval: int = 300):
+    def __init__(self, refresh_interval: int = 60):
         self._refresh_interval = refresh_interval
         self._blocklist: Set[str] = set()
         self._mapping: Dict[str, List[str]] = {}
@@ -27,7 +27,7 @@ class BetaHeaderConfigCache:
         self._loaded = False
 
     @classmethod
-    def instance(cls, refresh_interval: int = 300) -> "BetaHeaderConfigCache":
+    def instance(cls, refresh_interval: int = 60) -> "BetaHeaderConfigCache":
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:

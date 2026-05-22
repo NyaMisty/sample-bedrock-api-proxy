@@ -222,7 +222,8 @@ class Settings(BaseSettings):
         default=[
             "prompt-caching-scope-2026-01-05",
             "redact-thinking-2026-02-12",
-            "advisor-tool-2026-03-01"
+            "advisor-tool-2026-03-01",
+            "thinking-token-count-2026-05-13"
         ],
         alias="BETA_HEADERS_BLOCKLIST",
         description="Beta headers that should NOT be passed to Bedrock (unsupported)",
