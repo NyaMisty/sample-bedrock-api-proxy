@@ -204,23 +204,27 @@ def test_bedrock_guardrail_headers_are_forwarded(client, respx_mock):
     assert sent.headers["x-amzn-bedrock-guardrailversion"] == "DRAFT"
 
 
-def test_streaming_upstream_timeout_yields_clean_sse_error(
+def test_streaming_upstream_timeout_returns_json_504(
     client, respx_mock, mock_usage_tracker
 ):
-    """Upstream timeout during streaming should produce a structured SSE error event, not crash the stream."""
+    """When upstream times out before the stream begins, the proxy must
+    surface a real HTTP 504 with a JSON error body (NOT a fake 200
+    text/event-stream wrapping an SSE error frame). Strict clients can
+    then act on the status code instead of hanging on a malformed stream.
+    """
     respx_mock.post("/chat/completions").mock(
         side_effect=httpx.ReadTimeout("upstream took too long")
     )
 
-    with client.stream(
-        "POST",
+    r = client.post(
         "/openai/v1/chat/completions",
         headers={"Authorization": "Bearer sk-test"},
         json={"model": "m", "messages": [], "stream": True},
-    ) as r:
-        out = b"".join(r.iter_bytes())
+    )
 
-    assert b'"upstream_error"' in out, f"expected structured error, got: {out}"
-    assert b"[DONE]" in out
-    # No usage logged when the stream errored before any usage event arrived
+    assert r.status_code == 504
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    assert body["error"]["type"] == "upstream_error"
+    assert "timeout" in body["error"]["message"].lower()
     assert not mock_usage_tracker.record_usage.called

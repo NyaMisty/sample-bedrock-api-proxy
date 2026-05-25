@@ -113,3 +113,26 @@ def test_responses_upstream_error_returned_verbatim(client, respx_mock, mock_usa
     assert r.status_code == 400
     assert r.json()["error"]["message"] == "bad input"
     assert not mock_usage_tracker.record_usage.called
+
+
+def test_streaming_responses_upstream_4xx_returns_json_not_sse(
+    client, respx_mock, mock_usage_tracker
+):
+    """When upstream rejects a streaming request with 4xx, the proxy must
+    surface a real JSON 4xx response — NOT a fake 200 text/event-stream
+    that wraps the error body. Strict SSE clients (codex) hang waiting
+    for response.completed if we send the error as event-stream.
+    """
+    err = {"error": {"message": "tools[13].type=namespace not allowed", "type": "validation_error"}}
+    respx_mock.post("/responses").mock(return_value=httpx.Response(400, json=err))
+
+    r = client.post(
+        "/openai/v1/responses",
+        headers={"Authorization": "Bearer sk-test"},
+        json={"model": "m", "input": [], "stream": True, "tools": [{"type": "namespace"}]},
+    )
+    assert r.status_code == 400
+    assert r.headers["content-type"].startswith("application/json"), \
+        f"expected JSON content-type, got {r.headers['content-type']}"
+    assert r.json() == err
+    assert not mock_usage_tracker.record_usage.called

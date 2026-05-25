@@ -13,7 +13,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.api.openai_passthrough.client import get_client, upstream_headers, upstream_url
 from app.api.openai_passthrough.model_mapping import resolve_model_id
-from app.api.openai_passthrough.streaming import stream_passthrough
+from app.api.openai_passthrough.streaming import (
+    UpstreamConnectionError,
+    open_upstream_stream,
+    stream_passthrough_response,
+)
 from app.api.openai_passthrough.usage_extractor import normalize_usage
 from app.db.dynamodb import DynamoDBClient, ModelMappingManager, UsageTracker
 from app.middleware.auth import get_api_key_info
@@ -75,12 +79,26 @@ async def chat_completions(
     extra = _passthrough_extra_headers(request)
 
     if body.get("stream"):
+        try:
+            upstream_resp, error_body = await open_upstream_stream(
+                "POST", "/chat/completions", body, extra
+            )
+        except UpstreamConnectionError as exc:
+            return JSONResponse(
+                {"error": {"message": exc.message, "type": "upstream_error"}},
+                status_code=exc.status_code,
+            )
+        if error_body is not None:
+            return JSONResponse(
+                _decode_error_body(error_body),
+                status_code=upstream_resp.status_code,
+            )
+
         async def on_complete(usage: dict[str, Any]) -> None:
             _record_usage(api_key_info, usage, body["model"], "chat_completions")
+
         return StreamingResponse(
-            stream_passthrough(
-                "POST", "/chat/completions", body, "chat_completions", on_complete, extra
-            ),
+            stream_passthrough_response(upstream_resp, "chat_completions", on_complete),
             media_type="text/event-stream",
         )
 
@@ -107,10 +125,26 @@ async def responses_create(
     extra = _passthrough_extra_headers(request)
 
     if body.get("stream"):
+        try:
+            upstream_resp, error_body = await open_upstream_stream(
+                "POST", "/responses", body, extra
+            )
+        except UpstreamConnectionError as exc:
+            return JSONResponse(
+                {"error": {"message": exc.message, "type": "upstream_error"}},
+                status_code=exc.status_code,
+            )
+        if error_body is not None:
+            return JSONResponse(
+                _decode_error_body(error_body),
+                status_code=upstream_resp.status_code,
+            )
+
         async def on_complete(usage: dict[str, Any]) -> None:
             _record_usage(api_key_info, usage, body["model"], "responses")
+
         return StreamingResponse(
-            stream_passthrough("POST", "/responses", body, "responses", on_complete, extra),
+            stream_passthrough_response(upstream_resp, "responses", on_complete),
             media_type="text/event-stream",
         )
 
@@ -185,3 +219,21 @@ def _safe_json(resp) -> dict[str, Any]:
         return cast(dict[str, Any], resp.json())
     except ValueError:
         return {"error": {"message": resp.text, "type": "upstream_error"}}
+
+
+def _decode_error_body(body: bytes) -> dict[str, Any]:
+    """Parse a non-2xx upstream body as JSON, falling back to a wrapped string."""
+    import json as _json
+
+    try:
+        decoded = _json.loads(body)
+    except (ValueError, TypeError):
+        return {
+            "error": {
+                "message": body.decode("utf-8", "replace"),
+                "type": "upstream_error",
+            }
+        }
+    if isinstance(decoded, dict):
+        return cast(dict[str, Any], decoded)
+    return {"error": {"message": str(decoded), "type": "upstream_error"}}
