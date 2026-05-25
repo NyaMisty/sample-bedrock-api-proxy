@@ -175,3 +175,25 @@ def test_bedrock_guardrail_headers_are_forwarded(client, respx_mock):
     sent = route.calls[0].request
     assert sent.headers["x-amzn-bedrock-guardrailidentifier"] == "GR12345"
     assert sent.headers["x-amzn-bedrock-guardrailversion"] == "DRAFT"
+
+
+def test_streaming_upstream_timeout_yields_clean_sse_error(
+    client, respx_mock, mock_usage_tracker
+):
+    """Upstream timeout during streaming should produce a structured SSE error event, not crash the stream."""
+    respx_mock.post("/chat/completions").mock(
+        side_effect=httpx.ReadTimeout("upstream took too long")
+    )
+
+    with client.stream(
+        "POST",
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={"model": "m", "messages": [], "stream": True},
+    ) as r:
+        out = b"".join(r.iter_bytes())
+
+    assert b'"upstream_error"' in out, f"expected structured error, got: {out}"
+    assert b"[DONE]" in out
+    # No usage logged when the stream errored before any usage event arrived
+    assert not mock_usage_tracker.record_usage.called

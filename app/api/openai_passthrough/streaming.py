@@ -7,9 +7,12 @@ caller can record usage to DynamoDB.
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
+
+import httpx
 
 from app.api.openai_passthrough.client import get_client, upstream_headers
 from app.api.openai_passthrough.usage_extractor import try_extract_usage_from_sse
@@ -38,9 +41,22 @@ async def stream_passthrough(
                 # framing byte so the SSE body is well-formed for the downstream client.
                 yield (raw_line + "\n").encode("utf-8")
                 try_extract_usage_from_sse(raw_line, usage, api_surface)
+    except (httpx.RequestError, httpx.TimeoutException) as exc:
+        # Upstream connection/timeout failure during streaming. OpenAI SDK clients
+        # expect a clean SSE termination, not an abruptly closed stream.
+        logger.error("[OPENAI-PASSTHROUGH] upstream stream connection error: %s", exc)
+        err = {
+            "error": {
+                "message": f"upstream connection failed: {type(exc).__name__}",
+                "type": "upstream_error",
+            }
+        }
+        yield ("data: " + json.dumps(err) + "\n\n").encode("utf-8")
+        yield b"data: [DONE]\n\n"
+        return
     except Exception as exc:
+        # Unexpected error — re-raise so FastAPI can convert to 500.
         logger.error("[OPENAI-PASSTHROUGH] upstream stream error: %s", exc)
-        # Re-raise so FastAPI can return a 500; downstream client sees the stream end.
         raise
 
     if usage:
