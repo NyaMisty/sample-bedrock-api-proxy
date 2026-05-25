@@ -172,6 +172,14 @@ async def responses_input_items(
     return await _passthrough_request(request, f"/responses/{response_id}/input_items")
 
 
+@router.get("/models")
+async def list_models(
+    request: Request,
+    _: Dict[str, Any] = Depends(get_api_key_info),
+):
+    return await _passthrough_request(request, "/models")
+
+
 def _safe_json(resp) -> Dict[str, Any]:
     try:
         return resp.json()
