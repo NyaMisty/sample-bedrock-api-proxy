@@ -918,6 +918,8 @@ class UsageTracker:
         error_message: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         cache_ttl: Optional[str] = None,
+        api_surface: Optional[str] = None,
+        reasoning_tokens: int = 0,
     ):
         """
         Record API usage.
@@ -934,6 +936,8 @@ class UsageTracker:
             error_message: Error message if failed
             metadata: Optional metadata
             cache_ttl: Effective cache TTL used ("5m" or "1h"), for billing differentiation
+            api_surface: Source endpoint family ("messages", "chat_completions", or "responses")
+            reasoning_tokens: Reasoning tokens (already counted in output_tokens; stored separately for visibility)
         """
         # Use string timestamp to match CDK table schema (STRING type)
         current_time = int(time.time())
@@ -961,6 +965,11 @@ class UsageTracker:
 
         if cache_ttl:
             item["cache_ttl"] = cache_ttl
+
+        if api_surface:
+            item["api_surface"] = api_surface
+        if reasoning_tokens:
+            item["reasoning_tokens"] = reasoning_tokens
 
         # Add TTL if enabled (usage_ttl_days > 0)
         if settings.usage_ttl_days > 0:
