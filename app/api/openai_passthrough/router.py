@@ -8,7 +8,7 @@ import logging
 from typing import Any, Dict
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.api.openai_passthrough.client import get_client, upstream_headers
@@ -124,6 +124,52 @@ async def responses_create(
     if isinstance(data, dict) and isinstance(data.get("usage"), dict):
         _record_usage(api_key_info, data["usage"], body["model"], "responses")
     return JSONResponse(data, status_code=resp.status_code)
+
+
+async def _passthrough_request(request: Request, path: str) -> Response:
+    """Forward request to upstream and mirror the upstream response."""
+    extra = _passthrough_extra_headers(request)
+    body = None
+    if request.method in ("POST", "PUT", "PATCH"):
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+    resp = await get_client().request(
+        request.method, path, json=body, headers=upstream_headers(extra)
+    )
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        media_type=resp.headers.get("content-type"),
+    )
+
+
+@router.api_route("/responses/{response_id}", methods=["GET", "DELETE"])
+async def responses_get_or_delete(
+    response_id: str,
+    request: Request,
+    _: Dict[str, Any] = Depends(get_api_key_info),
+):
+    return await _passthrough_request(request, f"/responses/{response_id}")
+
+
+@router.post("/responses/{response_id}/cancel")
+async def responses_cancel(
+    response_id: str,
+    request: Request,
+    _: Dict[str, Any] = Depends(get_api_key_info),
+):
+    return await _passthrough_request(request, f"/responses/{response_id}/cancel")
+
+
+@router.get("/responses/{response_id}/input_items")
+async def responses_input_items(
+    response_id: str,
+    request: Request,
+    _: Dict[str, Any] = Depends(get_api_key_info),
+):
+    return await _passthrough_request(request, f"/responses/{response_id}/input_items")
 
 
 def _safe_json(resp) -> Dict[str, Any]:
