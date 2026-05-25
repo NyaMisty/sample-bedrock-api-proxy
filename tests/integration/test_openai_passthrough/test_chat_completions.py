@@ -155,6 +155,33 @@ def test_streaming_chat_completions_without_include_usage_does_not_log(
     assert not mock_usage_tracker.record_usage.called
 
 
+def test_streaming_chat_completions_does_not_inject_event_lines(
+    client, respx_mock,
+):
+    """Chat Completions SSE per OpenAI spec is data-only (no `event:` lines).
+    The proxy must NOT synthesize event: lines for this api_surface.
+    """
+    sse_lines = [
+        'data: {"id":"x","choices":[{"index":0,"delta":{"content":"hi"}}]}',
+        'data: [DONE]',
+    ]
+    body = "\n".join(sse_lines).encode()
+    respx_mock.post("/chat/completions").mock(
+        return_value=httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=body
+        )
+    )
+
+    with client.stream(
+        "POST", "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={"model": "m", "messages": [], "stream": True},
+    ) as r:
+        out = b"".join(r.iter_bytes()).decode()
+
+    assert "event: " not in out, f"chat completions stream should not contain event: lines, got:\n{out}"
+
+
 def test_bedrock_guardrail_headers_are_forwarded(client, respx_mock):
     """X-Amzn-Bedrock-* headers from the client should reach the upstream call."""
     route = respx_mock.post("/chat/completions").mock(

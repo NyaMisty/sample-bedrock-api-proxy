@@ -65,6 +65,42 @@ def test_streaming_responses_records_usage_from_response_completed(
     assert kw["api_surface"] == "responses"
 
 
+def test_streaming_responses_synthesizes_event_lines_for_data_only_upstream(
+    client, respx_mock,
+):
+    """Bedrock-mantle's Responses API emits data-only SSE (no `event:` lines).
+    Strict clients (e.g. Codex CLI) require `event: <type>` per OpenAI spec, so
+    the proxy must synthesize them from each frame's JSON `type` field.
+    """
+    sse_lines = [
+        'data: {"type":"response.created","response":{"id":"r-1"}}',
+        '',
+        'data: {"type":"response.output_text.delta","delta":"hi"}',
+        '',
+        'data: ' + json.dumps({
+            "type": "response.completed",
+            "response": {"id": "r-1", "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}},
+        }),
+        '',
+    ]
+    body = "\n".join(sse_lines).encode()
+    respx_mock.post("/responses").mock(
+        return_value=httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+    )
+
+    with client.stream(
+        "POST", "/openai/v1/responses",
+        headers={"Authorization": "Bearer sk-test"},
+        json={"model": "m", "input": [], "stream": True},
+    ) as r:
+        out = b"".join(r.iter_bytes()).decode()
+
+    # Each data: frame with a `type` field should be preceded by an event: line
+    assert "event: response.created\ndata: " in out
+    assert "event: response.output_text.delta\ndata: " in out
+    assert "event: response.completed\ndata: " in out
+
+
 def test_responses_upstream_error_returned_verbatim(client, respx_mock, mock_usage_tracker):
     respx_mock.post("/responses").mock(
         return_value=httpx.Response(400, json={"error": {"message": "bad input", "type": "invalid_request_error"}})
