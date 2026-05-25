@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from app.api.openai_passthrough.client import get_client, upstream_headers
+from app.api.openai_passthrough.client import get_client, upstream_headers, upstream_url
 from app.api.openai_passthrough.usage_extractor import try_extract_usage_from_sse
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ async def stream_passthrough(
     headers = upstream_headers(extra_headers)
 
     try:
-        async with client.stream(method, path, json=body, headers=headers) as resp:
+        async with client.stream(method, upstream_url(path), json=body, headers=headers) as resp:
             async for raw_line in resp.aiter_lines():
                 # Upstream gives us SSE lines without trailing newlines; restore the
                 # framing byte so the SSE body is well-formed for the downstream client.

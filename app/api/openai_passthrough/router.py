@@ -11,7 +11,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.api.openai_passthrough.client import get_client, upstream_headers
+from app.api.openai_passthrough.client import get_client, upstream_headers, upstream_url
 from app.api.openai_passthrough.model_mapping import resolve_model_id
 from app.api.openai_passthrough.streaming import stream_passthrough
 from app.api.openai_passthrough.usage_extractor import normalize_usage
@@ -85,7 +85,7 @@ async def chat_completions(
         )
 
     resp = await get_client().post(
-        "/chat/completions", json=body, headers=upstream_headers(extra)
+        upstream_url("/chat/completions"), json=body, headers=upstream_headers(extra)
     )
     if resp.status_code >= 400:
         return JSONResponse(_safe_json(resp), status_code=resp.status_code)
@@ -115,7 +115,7 @@ async def responses_create(
         )
 
     resp = await get_client().post(
-        "/responses", json=body, headers=upstream_headers(extra)
+        upstream_url("/responses"), json=body, headers=upstream_headers(extra)
     )
     if resp.status_code >= 400:
         return JSONResponse(_safe_json(resp), status_code=resp.status_code)
@@ -136,7 +136,7 @@ async def _passthrough_request(request: Request, path: str) -> Response:
         except Exception:
             body = None
     resp = await get_client().request(
-        request.method, path, json=body, headers=upstream_headers(extra)
+        request.method, upstream_url(path), json=body, headers=upstream_headers(extra)
     )
     return Response(
         content=resp.content,
