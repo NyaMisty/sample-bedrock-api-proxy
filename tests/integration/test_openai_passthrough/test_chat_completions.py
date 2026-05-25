@@ -153,3 +153,25 @@ def test_streaming_chat_completions_without_include_usage_does_not_log(
         list(r.iter_bytes())  # drain
 
     assert not mock_usage_tracker.record_usage.called
+
+
+def test_bedrock_guardrail_headers_are_forwarded(client, respx_mock):
+    """X-Amzn-Bedrock-* headers from the client should reach the upstream call."""
+    route = respx_mock.post("/chat/completions").mock(
+        return_value=httpx.Response(200, json={
+            "id": "x", "choices": [],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        })
+    )
+    client.post(
+        "/openai/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer sk-test",
+            "X-Amzn-Bedrock-GuardrailIdentifier": "GR12345",
+            "X-Amzn-Bedrock-GuardrailVersion": "DRAFT",
+        },
+        json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    sent = route.calls[0].request
+    assert sent.headers["x-amzn-bedrock-guardrailidentifier"] == "GR12345"
+    assert sent.headers["x-amzn-bedrock-guardrailversion"] == "DRAFT"
