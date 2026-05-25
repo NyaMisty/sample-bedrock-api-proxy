@@ -96,6 +96,36 @@ async def chat_completions(
     return JSONResponse(data, status_code=resp.status_code)
 
 
+@router.post("/responses")
+async def responses_create(
+    request: Request,
+    api_key_info: Dict[str, Any] = Depends(get_api_key_info),
+):
+    body = await request.json()
+    mapping, _ = _managers()
+    body["model"] = resolve_model_id(body.get("model", ""), mapping)
+    extra = _passthrough_extra_headers(request)
+
+    if body.get("stream"):
+        async def on_complete(usage: Dict[str, Any]) -> None:
+            _record_usage(api_key_info, usage, body["model"], "responses")
+        return StreamingResponse(
+            stream_passthrough("POST", "/responses", body, "responses", on_complete, extra),
+            media_type="text/event-stream",
+        )
+
+    resp = await get_client().post(
+        "/responses", json=body, headers=upstream_headers(extra)
+    )
+    if resp.status_code >= 400:
+        return JSONResponse(_safe_json(resp), status_code=resp.status_code)
+
+    data = resp.json()
+    if isinstance(data, dict) and isinstance(data.get("usage"), dict):
+        _record_usage(api_key_info, data["usage"], body["model"], "responses")
+    return JSONResponse(data, status_code=resp.status_code)
+
+
 def _safe_json(resp) -> Dict[str, Any]:
     try:
         return resp.json()
