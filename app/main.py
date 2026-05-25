@@ -313,6 +313,14 @@ app.include_router(
     tags=["models"],
 )
 
+if settings.enable_openai_passthrough:
+    from app.api.openai_passthrough import router as openai_passthrough_router
+    app.include_router(
+        openai_passthrough_router,
+        prefix="/openai/v1",
+        tags=["OpenAI Passthrough"],
+    )
+
 
 # Custom HTTPException handler to return proper JSON format
 from fastapi import HTTPException

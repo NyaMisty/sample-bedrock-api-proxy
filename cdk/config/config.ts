@@ -90,6 +90,7 @@ export interface EnvironmentConfig {
 
   // OpenAI-Compatible API (Bedrock Mantle) Configuration
   enableOpenaiCompat: boolean;
+  enableOpenaiPassthrough: boolean;          // Mount /openai/v1/* passthrough endpoints
   openaiBaseUrl?: string;                    // e.g., https://bedrock-mantle.us-east-1.api.aws/v1
 
   // Admin Portal Configuration
@@ -196,6 +197,7 @@ export const environments: { [key: string]: EnvironmentConfigWithoutRuntime } = 
 
     // OpenAI-Compatible API (Bedrock Mantle)
     enableOpenaiCompat: false,
+    enableOpenaiPassthrough: true,
     // openaiBaseUrl: 'https://bedrock-mantle.us-east-1.api.aws/v1',
 
     // Admin Portal
@@ -300,6 +302,7 @@ export const environments: { [key: string]: EnvironmentConfigWithoutRuntime } = 
 
     // OpenAI-Compatible API (Bedrock Mantle)
     enableOpenaiCompat: false,
+    enableOpenaiPassthrough: true,
     // openaiBaseUrl: 'https://bedrock-mantle.us-east-1.api.aws/v1',
 
     // Admin Portal
@@ -410,6 +413,11 @@ export function getConfig(environmentName: string = 'dev'): EnvironmentConfig {
     ? process.env.ENABLE_OPENAI_COMPAT.toLowerCase() === 'true'
     : config.enableOpenaiCompat;
 
+  // Override OpenAI-passthrough settings from environment variables
+  const enableOpenaiPassthrough = process.env.ENABLE_OPENAI_PASSTHROUGH
+    ? process.env.ENABLE_OPENAI_PASSTHROUGH.toLowerCase() === 'true'
+    : config.enableOpenaiPassthrough;
+
   // Override CloudFront settings from environment variables
   const enableCloudFront = process.env.ENABLE_CLOUDFRONT
     ? process.env.ENABLE_CLOUDFRONT.toLowerCase() === 'true'
@@ -425,6 +433,7 @@ export function getConfig(environmentName: string = 'dev'): EnvironmentConfig {
     enableWebSearch,
     enableWebFetch,
     enableOpenaiCompat,
+    enableOpenaiPassthrough,
     enableCloudFront,
     ...(process.env.OPENAI_BASE_URL && { openaiBaseUrl: process.env.OPENAI_BASE_URL }),
     ...(process.env.OTEL_EXPORTER_OTLP_ENDPOINT && { otelExporterEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT }),
