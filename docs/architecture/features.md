@@ -419,3 +419,71 @@ The admin portal is a separate FastAPI application for managing API keys, usage,
 ### Production Deployment
 
 In production (ECS), the admin portal frontend is served as static files from the main proxy at `/admin/`, with API calls proxied to the backend.
+
+---
+
+## OpenAI Passthrough
+
+Adds new `/openai/v1/*` endpoints that accept OpenAI-native API formats and forward them to `bedrock-mantle`. Distinct from `ENABLE_OPENAI_COMPAT` (which converts Anthropic-format requests on `/v1/messages` into OpenAI calls).
+
+### When to use it
+
+- You have client code using the OpenAI Python/JS SDK and want to point it at Bedrock without rewriting.
+- You want stateful conversation chaining via the Responses API (`previous_response_id`, `store=true`).
+- You want the proxy's API key auth, rate limits, budgets, and usage analytics for OpenAI-format traffic too.
+
+### Configuration
+
+```bash
+ENABLE_OPENAI_PASSTHROUGH=True
+OPENAI_API_KEY=<your-bedrock-api-key>
+OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
+```
+
+### Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/openai/v1/chat/completions` | Chat Completions (streaming + non-streaming) |
+| POST | `/openai/v1/responses` | Responses API (streaming + non-streaming) |
+| GET | `/openai/v1/responses/{id}` | Retrieve stored response |
+| DELETE | `/openai/v1/responses/{id}` | Delete stored response |
+| GET | `/openai/v1/responses/{id}/input_items` | List input items |
+| POST | `/openai/v1/responses/{id}/cancel` | Cancel background response |
+| GET | `/openai/v1/models` | List available models |
+
+### OpenAI SDK example
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="<your-proxy-api-key>",
+    base_url="https://your-proxy.example.com/openai/v1",
+)
+resp = client.chat.completions.create(
+    model="openai.gpt-oss-120b",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+```
+
+### Auth
+
+Either `Authorization: Bearer <proxy-key>` (OpenAI SDK default) or `x-api-key: <proxy-key>` works. The proxy uses its configured `OPENAI_API_KEY` (Bedrock API key) for the upstream call.
+
+### Model mapping
+
+The existing `anthropic-proxy-model-mapping` table is consulted. If a mapping exists, the client-supplied `model` is replaced before forwarding. If no mapping exists, the model ID is passed through unchanged — so Bedrock-native IDs like `openai.gpt-oss-120b` work without registration.
+
+### Usage tracking
+
+Usage is normalized into the existing `anthropic-proxy-usage` schema. Two new sparse columns are written:
+
+- `api_surface` ∈ `{"messages", "chat_completions", "responses"}`
+- `reasoning_tokens` (already counted in `output_tokens`; stored separately for visibility)
+
+For streaming Chat Completions, clients must set `stream_options: {"include_usage": true}` for usage to be captured. Without it, usage is logged as zero. The Responses API always emits `response.completed` with usage.
+
+### Guardrails
+
+`X-Amzn-Bedrock-*` headers from the client (e.g. `X-Amzn-Bedrock-GuardrailIdentifier`) are forwarded to bedrock-mantle.

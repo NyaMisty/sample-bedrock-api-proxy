@@ -40,8 +40,9 @@ black app tests && ruff check app tests && mypy app
 - **InvokeModel API** (Claude models): Native Anthropic format, minimal conversion, full beta feature support
 - **Converse API** (non-Claude models): Requires format conversion, unified API for all Bedrock models
 - **OpenAI Chat Completions API** (non-Claude models, optional): When `ENABLE_OPENAI_COMPAT=True`, non-Claude models use Bedrock's OpenAI-compatible endpoint via bedrock-mantle instead of Converse API
+- **OpenAI Passthrough** (any model bedrock-mantle accepts, optional): When `ENABLE_OPENAI_PASSTHROUGH=True`, mounts `/openai/v1/{chat/completions,responses,responses/{id},models}` for clients using OpenAI-format directly.
 
-**Routing**: If model ID contains "anthropic" or "claude" → InvokeModel; else if `ENABLE_OPENAI_COMPAT` → OpenAI Chat Completions; else → Converse.
+**Routing**: If model ID contains "anthropic" or "claude" → InvokeModel; else if `ENABLE_OPENAI_COMPAT` → OpenAI Chat Completions; else → Converse. OpenAI Passthrough routes are independent and mount at `/openai/v1/*`.
 
 > **Detailed conversion flows, content block mapping, and streaming implementation**: see [docs/architecture/detailed-flows.md](docs/architecture/detailed-flows.md)
 
@@ -104,6 +105,7 @@ Each feature has detailed docs in [docs/architecture/features.md](docs/architect
 - **OpenTelemetry Tracing**: OTEL GenAI semantic conventions, session-based trace grouping. Zero overhead when disabled.
 - **Admin Portal**: Separate FastAPI app for API key/usage/pricing management with Cognito auth.
 - **OpenAI-Compatible API**: Non-Claude models can optionally use Bedrock's OpenAI Chat Completions API via bedrock-mantle endpoint instead of Converse API. Controlled by `ENABLE_OPENAI_COMPAT` flag. Maps `thinking` to OpenAI `reasoning` with configurable effort thresholds.
+- **OpenAI Passthrough**: New `/openai/v1/*` endpoints accept OpenAI-native Chat Completions and Responses API requests and forward them to bedrock-mantle. Distinct from `ENABLE_OPENAI_COMPAT` (which routes Anthropic-format requests on `/v1/messages`). Reuses proxy API key auth, rate limits, budgets, and usage tracking. Controlled by `ENABLE_OPENAI_PASSTHROUGH`.
 
 ## Common Development Tasks
 
