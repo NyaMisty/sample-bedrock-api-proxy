@@ -5,7 +5,7 @@ Mounted at /openai/v1 only when settings.enable_openai_passthrough is True.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -36,7 +36,7 @@ def _managers() -> tuple[ModelMappingManager, UsageTracker]:
     return _mapping, _usage
 
 
-def _record_usage(api_key_info: Dict[str, Any], raw_usage: Dict[str, Any], model: str, api_surface: str) -> None:
+def _record_usage(api_key_info: dict[str, Any], raw_usage: dict[str, Any], model: str, api_surface: str) -> None:
     _, usage = _managers()
     norm = normalize_usage(raw_usage, api_surface)
     try:
@@ -55,9 +55,9 @@ def _record_usage(api_key_info: Dict[str, Any], raw_usage: Dict[str, Any], model
         logger.warning("[OPENAI-PASSTHROUGH] usage recording failed: %s", exc)
 
 
-def _passthrough_extra_headers(request: Request) -> Dict[str, str]:
+def _passthrough_extra_headers(request: Request) -> dict[str, str]:
     """Forward Bedrock-specific headers from the client to upstream (e.g. guardrails)."""
-    extra: Dict[str, str] = {}
+    extra: dict[str, str] = {}
     for name, value in request.headers.items():
         if name.lower().startswith("x-amzn-bedrock-"):
             extra[name] = value
@@ -67,7 +67,7 @@ def _passthrough_extra_headers(request: Request) -> Dict[str, str]:
 @router.post("/chat/completions")
 async def chat_completions(
     request: Request,
-    api_key_info: Dict[str, Any] = Depends(get_api_key_info),
+    api_key_info: dict[str, Any] = Depends(get_api_key_info),
 ):
     body = await request.json()
     mapping, _ = _managers()
@@ -75,7 +75,7 @@ async def chat_completions(
     extra = _passthrough_extra_headers(request)
 
     if body.get("stream"):
-        async def on_complete(usage: Dict[str, Any]) -> None:
+        async def on_complete(usage: dict[str, Any]) -> None:
             _record_usage(api_key_info, usage, body["model"], "chat_completions")
         return StreamingResponse(
             stream_passthrough(
@@ -99,7 +99,7 @@ async def chat_completions(
 @router.post("/responses")
 async def responses_create(
     request: Request,
-    api_key_info: Dict[str, Any] = Depends(get_api_key_info),
+    api_key_info: dict[str, Any] = Depends(get_api_key_info),
 ):
     body = await request.json()
     mapping, _ = _managers()
@@ -107,7 +107,7 @@ async def responses_create(
     extra = _passthrough_extra_headers(request)
 
     if body.get("stream"):
-        async def on_complete(usage: Dict[str, Any]) -> None:
+        async def on_complete(usage: dict[str, Any]) -> None:
             _record_usage(api_key_info, usage, body["model"], "responses")
         return StreamingResponse(
             stream_passthrough("POST", "/responses", body, "responses", on_complete, extra),
@@ -149,7 +149,7 @@ async def _passthrough_request(request: Request, path: str) -> Response:
 async def responses_get_or_delete(
     response_id: str,
     request: Request,
-    _: Dict[str, Any] = Depends(get_api_key_info),
+    _: dict[str, Any] = Depends(get_api_key_info),
 ):
     return await _passthrough_request(request, f"/responses/{response_id}")
 
@@ -158,7 +158,7 @@ async def responses_get_or_delete(
 async def responses_cancel(
     response_id: str,
     request: Request,
-    _: Dict[str, Any] = Depends(get_api_key_info),
+    _: dict[str, Any] = Depends(get_api_key_info),
 ):
     return await _passthrough_request(request, f"/responses/{response_id}/cancel")
 
@@ -167,7 +167,7 @@ async def responses_cancel(
 async def responses_input_items(
     response_id: str,
     request: Request,
-    _: Dict[str, Any] = Depends(get_api_key_info),
+    _: dict[str, Any] = Depends(get_api_key_info),
 ):
     return await _passthrough_request(request, f"/responses/{response_id}/input_items")
 
@@ -175,13 +175,13 @@ async def responses_input_items(
 @router.get("/models")
 async def list_models(
     request: Request,
-    _: Dict[str, Any] = Depends(get_api_key_info),
+    _: dict[str, Any] = Depends(get_api_key_info),
 ):
     return await _passthrough_request(request, "/models")
 
 
-def _safe_json(resp) -> Dict[str, Any]:
+def _safe_json(resp) -> dict[str, Any]:
     try:
-        return resp.json()
+        return cast(dict[str, Any], resp.json())
     except ValueError:
         return {"error": {"message": resp.text, "type": "upstream_error"}}

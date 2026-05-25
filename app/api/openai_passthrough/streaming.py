@@ -8,7 +8,8 @@ caller can record usage to DynamoDB.
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 from app.api.openai_passthrough.client import get_client, upstream_headers
 from app.api.openai_passthrough.usage_extractor import try_extract_usage_from_sse
@@ -19,13 +20,13 @@ logger = logging.getLogger(__name__)
 async def stream_passthrough(
     method: str,
     path: str,
-    body: Dict[str, Any] | None,
+    body: dict[str, Any] | None,
     api_surface: str,
-    on_complete: Callable[[Dict[str, Any]], Awaitable[None] | None],
-    extra_headers: Dict[str, str] | None = None,
+    on_complete: Callable[[dict[str, Any]], Awaitable[None] | None],
+    extra_headers: dict[str, str] | None = None,
 ) -> AsyncIterator[bytes]:
     """Stream upstream response bytes line-by-line; capture usage; trigger callback."""
-    usage: Dict[str, Any] = {}
+    usage: dict[str, Any] = {}
 
     client = get_client()
     headers = upstream_headers(extra_headers)
@@ -46,4 +47,4 @@ async def stream_passthrough(
         result = on_complete(usage)
         # Support both sync and async callbacks
         if hasattr(result, "__await__"):
-            await result  # type: ignore[func-returns-value]
+            await result  # type: ignore[misc]

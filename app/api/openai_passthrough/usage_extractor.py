@@ -11,10 +11,10 @@ later passes that dict through normalize_usage().
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any
 
 
-def normalize_usage(raw: Dict[str, Any], api_surface: str) -> Dict[str, int]:
+def normalize_usage(raw: dict[str, Any], api_surface: str) -> dict[str, int]:
     """Normalize OpenAI-shaped usage into Anthropic-shaped fields.
 
     api_surface: "chat_completions" or "responses"
@@ -46,7 +46,7 @@ def normalize_usage(raw: Dict[str, Any], api_surface: str) -> Dict[str, int]:
 
 
 def try_extract_usage_from_sse(
-    raw_line: str, holder: Dict[str, Any], api_surface: str
+    raw_line: str, holder: dict[str, Any], api_surface: str
 ) -> None:
     """Inspect an SSE line and, if it carries usage info, store it in holder.
 
