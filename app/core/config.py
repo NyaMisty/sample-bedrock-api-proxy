@@ -404,6 +404,11 @@ class Settings(BaseSettings):
         alias="OPENAI_COMPAT_THINKING_MEDIUM_THRESHOLD",
         description="budget_tokens >= this → reasoning effort 'medium', below → 'low'"
     )
+    enable_openai_passthrough: bool = Field(
+        default=False,
+        alias="ENABLE_OPENAI_PASSTHROUGH",
+        description="Mount /openai/v1/* endpoints (Chat Completions + Responses passthrough to bedrock-mantle)"
+    )
 
     # === Multi-Provider Gateway Feature Flags ===
     multi_provider_enabled: bool = Field(
