@@ -103,7 +103,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             api_key_info = None
 
         if not api_key_info:
-            print(f"[AUTH] Invalid API key: {api_key[:20]}...")
+            # Deliberately do not log the rejected key (or any derivative of
+            # it). The 401 response is the operational signal; aggregate
+            # rate-limit metrics are the right place to fingerprint abuse.
             from fastapi.responses import JSONResponse
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
