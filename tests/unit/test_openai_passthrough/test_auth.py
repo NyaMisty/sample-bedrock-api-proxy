@@ -110,6 +110,42 @@ async def test_missing_both_headers_returns_401(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_invalid_api_key_does_not_leak_to_log(monkeypatch, capsys):
+    """The 401 invalid-key path must not log any substring of the rejected key.
+
+    Guards against CodeQL py/clear-text-logging-sensitive-data and any
+    accidental future reintroduction of a key-derived log line.
+    """
+    monkeypatch.setattr("app.core.config.settings.require_api_key", True)
+    monkeypatch.setattr("app.core.config.settings.master_api_key", "")
+    monkeypatch.setattr("app.core.config.settings.api_key_header", "x-api-key")
+
+    secret = "sk-deadbeef-DO-NOT-LEAK-1234567890abcdef"
+
+    request = MagicMock(spec=Request)
+    request.url.path = "/test"
+    request.headers = Headers({"x-api-key": secret})
+    request.state = MagicMock()
+
+    mock_manager = MagicMock()
+    mock_manager.validate_api_key.return_value = None  # invalid key path
+
+    mock_call_next = AsyncMock()
+    ddb_client = MagicMock()
+    with patch("app.middleware.auth.APIKeyManager", return_value=mock_manager):
+        middleware = AuthMiddleware(MagicMock(), dynamodb_client=ddb_client)
+    response = await middleware.dispatch(request, mock_call_next)
+
+    captured = capsys.readouterr().out + capsys.readouterr().err
+    # No prefix of the key (length >= 4) should appear anywhere in the log
+    for n in range(4, len(secret) + 1):
+        assert secret[:n] not in captured, (
+            f"log leaked prefix of length {n}: secret[:{n}]={secret[:n]!r}"
+        )
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_authorization_non_bearer_is_ignored(monkeypatch):
     """Authorization: Basic ... should not be treated as an API key."""
     # Patch settings
