@@ -26,6 +26,27 @@ def _message_text(req: MessageRequest, index: int) -> str:
     return text
 
 
+def _sse_payloads(out: str) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for line in out.splitlines():
+        if not line.startswith("data: "):
+            continue
+        payload = json.loads(line[len("data: ") :])
+        assert isinstance(payload, dict)
+        payloads.append(payload)
+    return payloads
+
+
+def _first_payload(
+    payloads: list[dict[str, Any]],
+    event_type: str,
+) -> dict[str, Any]:
+    for payload in payloads:
+        if payload.get("type") == event_type:
+            return payload
+    raise AssertionError(f"Missing payload for {event_type}")
+
+
 def test_is_responses_web_search_request_detects_current_and_preview_tools():
     assert is_responses_web_search_request({"tools": [{"type": "web_search"}]})
     assert is_responses_web_search_request({"tools": [{"type": "web_search_preview"}]})
@@ -340,15 +361,55 @@ async def test_stream_response_events_emits_responses_sse():
     assert "event: response.created\n" in out
     assert "event: response.output_item.added\n" in out
     assert "event: response.output_text.delta\n" in out
+    assert "event: response.output_text.done\n" in out
     assert "event: response.completed\n" in out
-    completed_lines = [
-        line
-        for line in out.splitlines()
-        if line.startswith("data: ") and "response.completed" in line
+
+    payloads = _sse_payloads(out)
+    assert [payload["sequence_number"] for payload in payloads] == list(
+        range(len(payloads))
+    )
+
+    message_added = next(
+        payload
+        for payload in payloads
+        if payload.get("type") == "response.output_item.added"
+        and payload["item"]["type"] == "message"
+    )
+    assert message_added["item"]["status"] == "in_progress"
+    assert message_added["item"]["content"] == []
+
+    content_part_added = _first_payload(payloads, "response.content_part.added")
+    assert content_part_added["part"] == {
+        "type": "output_text",
+        "text": "",
+        "annotations": [],
+    }
+
+    output_text_delta = _first_payload(payloads, "response.output_text.delta")
+    assert output_text_delta["delta"] == "hello"
+
+    output_text_done = _first_payload(payloads, "response.output_text.done")
+    assert output_text_done["text"] == "hello"
+
+    content_part_done = _first_payload(payloads, "response.content_part.done")
+    assert content_part_done["part"]["text"] == "hello"
+
+    message_done = next(
+        payload
+        for payload in payloads
+        if payload.get("type") == "response.output_item.done"
+        and payload["item"]["type"] == "message"
+    )
+    assert message_done["item"]["status"] == "completed"
+    assert message_done["item"]["content"][0]["text"] == "hello"
+
+    completed = _first_payload(payloads, "response.completed")
+    assert completed["response"]["usage"]["input_tokens"] == 2
+    assert completed["response"]["output"][-1]["content"][0]["text"] == "hello"
+    assert [item["type"] for item in completed["response"]["output"]] == [
+        "web_search_call",
+        "message",
     ]
-    assert completed_lines
-    payload = json.loads(completed_lines[-1][len("data: ") :])
-    assert payload["response"]["usage"]["input_tokens"] == 2
 
 
 def test_build_response_json_emits_one_web_search_call_per_request():

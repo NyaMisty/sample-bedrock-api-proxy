@@ -203,42 +203,58 @@ async def stream_response_events(
         original_model=original_model,
         response_id=response_id,
     )
+    sequence_number = 0
+
+    def event(event_type: str, payload: dict[str, Any]) -> bytes:
+        nonlocal sequence_number
+        numbered_payload = dict(payload)
+        numbered_payload["sequence_number"] = sequence_number
+        sequence_number += 1
+        return _sse(event_type, numbered_payload)
+
     response_stub = {
         key: data[key]
         for key in ("id", "object", "created_at", "status", "model")
         if key in data
     }
 
-    yield _sse(
+    yield event(
         "response.created",
         {"type": "response.created", "response": response_stub},
     )
 
     for index, item in enumerate(data["output"]):
-        yield _sse(
+        added_item = item
+        if item.get("type") == "message":
+            added_item = dict(item)
+            added_item["status"] = "in_progress"
+            added_item["content"] = []
+
+        yield event(
             "response.output_item.added",
             {
                 "type": "response.output_item.added",
                 "output_index": index,
-                "item": item,
+                "item": added_item,
             },
         )
         if item.get("type") == "message":
             content = item.get("content") or []
             if content:
-                yield _sse(
+                empty_part = {"type": "output_text", "text": "", "annotations": []}
+                yield event(
                     "response.content_part.added",
                     {
                         "type": "response.content_part.added",
                         "item_id": item["id"],
                         "output_index": index,
                         "content_index": 0,
-                        "part": content[0],
+                        "part": empty_part,
                     },
                 )
                 text = content[0].get("text", "")
                 if text:
-                    yield _sse(
+                    yield event(
                         "response.output_text.delta",
                         {
                             "type": "response.output_text.delta",
@@ -248,7 +264,17 @@ async def stream_response_events(
                             "delta": text,
                         },
                     )
-                yield _sse(
+                    yield event(
+                        "response.output_text.done",
+                        {
+                            "type": "response.output_text.done",
+                            "item_id": item["id"],
+                            "output_index": index,
+                            "content_index": 0,
+                            "text": text,
+                        },
+                    )
+                yield event(
                     "response.content_part.done",
                     {
                         "type": "response.content_part.done",
@@ -258,7 +284,7 @@ async def stream_response_events(
                         "part": content[0],
                     },
                 )
-        yield _sse(
+        yield event(
             "response.output_item.done",
             {
                 "type": "response.output_item.done",
@@ -269,7 +295,7 @@ async def stream_response_events(
 
     completed = dict(data)
     completed["status"] = "completed"
-    yield _sse(
+    yield event(
         "response.completed",
         {"type": "response.completed", "response": completed},
     )
