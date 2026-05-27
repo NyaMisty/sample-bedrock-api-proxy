@@ -1,14 +1,17 @@
 """Unit tests for OpenAI Responses API web search adapter helpers."""
 
+from typing import Any
+
 import pytest
 
 from app.api.openai_passthrough.web_search import (
     OpenAIResponsesWebSearchError,
     build_message_request,
+    build_response_json,
     extract_web_search_options,
     is_responses_web_search_request,
 )
-from app.schemas.anthropic import MessageRequest
+from app.schemas.anthropic import MessageRequest, MessageResponse, Usage
 
 
 def _message_text(req: MessageRequest, index: int) -> str:
@@ -243,3 +246,69 @@ def test_build_message_request_rejects_invalid_user_location_field_type():
         )
 
     assert "user_location" in exc.value.message
+
+
+def test_build_response_json_maps_text_annotations_and_usage():
+    content: list[Any] = [
+        {
+            "type": "server_tool_use",
+            "id": "srvtoolu_123",
+            "name": "web_search",
+            "input": {"query": "Python 3.13"},
+        },
+        {
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_123",
+            "content": [
+                {
+                    "type": "web_search_result",
+                    "url": "https://docs.python.org/3/whatsnew/3.13.html",
+                    "title": "What's New In Python 3.13",
+                    "encrypted_content": "eA==",
+                }
+            ],
+        },
+        {
+            "type": "text",
+            "text": "Python 3.13 added a new interactive interpreter.",
+            "citations": [
+                {
+                    "type": "web_search_result_location",
+                    "url": "https://docs.python.org/3/whatsnew/3.13.html",
+                    "title": "What's New In Python 3.13",
+                    "cited_text": "new interactive interpreter",
+                }
+            ],
+        },
+    ]
+    msg = MessageResponse(
+        id="msg-local",
+        type="message",
+        role="assistant",
+        model="m",
+        stop_reason="end_turn",
+        content=content,
+        usage=Usage(
+            input_tokens=10,
+            output_tokens=5,
+            server_tool_use={"web_search_requests": 1},
+        ),
+    )
+
+    data = build_response_json(msg, original_model="m")
+
+    assert data["object"] == "response"
+    assert data["status"] == "completed"
+    assert data["model"] == "m"
+    assert data["output"][0]["type"] == "web_search_call"
+    assert data["output"][0]["status"] == "completed"
+    message = data["output"][1]
+    assert message["type"] == "message"
+    assert message["content"][0]["type"] == "output_text"
+    assert data["output_text"] == "Python 3.13 added a new interactive interpreter."
+    ann = message["content"][0]["annotations"][0]
+    assert ann["type"] == "url_citation"
+    assert ann["url"] == "https://docs.python.org/3/whatsnew/3.13.html"
+    assert 0 <= ann["start_index"] <= ann["end_index"] <= len(data["output_text"])
+    assert data["usage"] == {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+    assert data["metadata"]["web_search_requests"] == 1

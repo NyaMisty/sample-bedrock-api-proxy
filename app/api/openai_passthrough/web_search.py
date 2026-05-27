@@ -5,10 +5,12 @@ tool to the proxy's existing Anthropic Messages web search implementation.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Literal
+from uuid import uuid4
 
-from app.schemas.anthropic import Message, MessageRequest
+from app.schemas.anthropic import Message, MessageRequest, MessageResponse
 from app.schemas.web_search import UserLocation
 
 OPENAI_WEB_SEARCH_TOOL_TYPES = {"web_search", "web_search_preview"}
@@ -54,6 +56,123 @@ def _web_search_tools(body: dict[str, Any]) -> list[dict[str, Any]]:
 
 def is_responses_web_search_request(body: dict[str, Any]) -> bool:
     return bool(_web_search_tools(body))
+
+
+def _block_dict(block: Any) -> dict[str, Any]:
+    if isinstance(block, dict):
+        return block
+    if hasattr(block, "model_dump"):
+        dumped = block.model_dump(exclude_none=True)
+        if isinstance(dumped, dict):
+            return dumped
+    return {}
+
+
+def _extract_search_count(response: MessageResponse) -> int:
+    server_tool_use = response.usage.server_tool_use if response.usage else None
+    if not isinstance(server_tool_use, dict):
+        return 0
+    return int(server_tool_use.get("web_search_requests", 0) or 0)
+
+
+def _text_and_annotations(content: list[Any]) -> tuple[str, list[dict[str, Any]]]:
+    output_parts: list[str] = []
+    annotations: list[dict[str, Any]] = []
+
+    for block in content:
+        block_dict = _block_dict(block)
+        if block_dict.get("type") != "text":
+            continue
+        text = str(block_dict.get("text") or "")
+        if not text:
+            continue
+        start = sum(len(part) for part in output_parts)
+        if output_parts:
+            output_parts.append("\n")
+            start += 1
+        output_parts.append(text)
+        end = start + len(text)
+        for citation in block_dict.get("citations") or []:
+            if not isinstance(citation, dict):
+                continue
+            if citation.get("type") != "web_search_result_location":
+                continue
+            cited_text = str(citation.get("cited_text") or "")
+            cited_start = text.find(cited_text) if cited_text else -1
+            if cited_start >= 0:
+                ann_start = start + cited_start
+                ann_end = ann_start + len(cited_text)
+            else:
+                ann_start = start
+                ann_end = end
+            annotations.append(
+                {
+                    "type": "url_citation",
+                    "url": citation.get("url", ""),
+                    "title": citation.get("title", ""),
+                    "start_index": ann_start,
+                    "end_index": ann_end,
+                }
+            )
+
+    return "".join(output_parts), annotations
+
+
+def build_response_json(
+    response: MessageResponse,
+    *,
+    original_model: str,
+    response_id: str | None = None,
+) -> dict[str, Any]:
+    response_id = response_id or f"resp_{uuid4().hex[:24]}"
+    output_text, annotations = _text_and_annotations(response.content)
+    search_count = _extract_search_count(response)
+
+    output: list[dict[str, Any]] = []
+    if search_count > 0:
+        output.append(
+            {
+                "id": f"ws_{uuid4().hex[:24]}",
+                "type": "web_search_call",
+                "status": "completed",
+            }
+        )
+
+    output.append(
+        {
+            "id": response.id,
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": output_text,
+                    "annotations": annotations,
+                }
+            ],
+        }
+    )
+
+    input_tokens = int(response.usage.input_tokens if response.usage else 0)
+    output_tokens = int(response.usage.output_tokens if response.usage else 0)
+    data: dict[str, Any] = {
+        "id": response_id,
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": "completed",
+        "model": original_model,
+        "output": output,
+        "output_text": output_text,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    }
+    if search_count > 0:
+        data["metadata"] = {"web_search_requests": search_count}
+    return data
 
 
 def _as_str_list(value: Any, field_name: str) -> list[str] | None:
