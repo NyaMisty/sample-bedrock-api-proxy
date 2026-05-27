@@ -1,5 +1,6 @@
 """Unit tests for OpenAI Responses API web search adapter helpers."""
 
+import json
 from typing import Any
 
 import pytest
@@ -10,6 +11,7 @@ from app.api.openai_passthrough.web_search import (
     build_response_json,
     extract_web_search_options,
     is_responses_web_search_request,
+    stream_response_events,
 )
 from app.schemas.anthropic import MessageRequest, MessageResponse, Usage
 
@@ -313,6 +315,40 @@ def test_build_response_json_maps_text_annotations_and_usage():
     assert ann["end_index"] == len(data["output_text"])
     assert data["usage"] == {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
     assert data["metadata"]["web_search_requests"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_response_events_emits_responses_sse():
+    content: list[Any] = [{"type": "text", "text": "hello"}]
+    msg = MessageResponse(
+        id="msg-local",
+        type="message",
+        role="assistant",
+        model="m",
+        stop_reason="end_turn",
+        content=content,
+        usage=Usage(
+            input_tokens=2,
+            output_tokens=1,
+            server_tool_use={"web_search_requests": 1},
+        ),
+    )
+
+    chunks = [chunk async for chunk in stream_response_events(msg, original_model="m")]
+    out = b"".join(chunks).decode("utf-8")
+
+    assert "event: response.created\n" in out
+    assert "event: response.output_item.added\n" in out
+    assert "event: response.output_text.delta\n" in out
+    assert "event: response.completed\n" in out
+    completed_lines = [
+        line
+        for line in out.splitlines()
+        if line.startswith("data: ") and "response.completed" in line
+    ]
+    assert completed_lines
+    payload = json.loads(completed_lines[-1][len("data: ") :])
+    assert payload["response"]["usage"]["input_tokens"] == 2
 
 
 def test_build_response_json_emits_one_web_search_call_per_request():

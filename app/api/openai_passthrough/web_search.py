@@ -5,8 +5,10 @@ tool to the proxy's existing Anthropic Messages web search implementation.
 """
 from __future__ import annotations
 
+import json
 import math
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import uuid4
@@ -181,6 +183,96 @@ def build_response_json(
     if search_count > 0:
         data["metadata"] = {"web_search_requests": search_count}
     return data
+
+
+def _sse(event_type: str, payload: dict[str, Any]) -> bytes:
+    return (
+        f"event: {event_type}\n"
+        f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+    ).encode()
+
+
+async def stream_response_events(
+    response: MessageResponse,
+    *,
+    original_model: str,
+    response_id: str | None = None,
+) -> AsyncIterator[bytes]:
+    data = build_response_json(
+        response,
+        original_model=original_model,
+        response_id=response_id,
+    )
+    response_stub = {
+        key: data[key]
+        for key in ("id", "object", "created_at", "status", "model")
+        if key in data
+    }
+
+    yield _sse(
+        "response.created",
+        {"type": "response.created", "response": response_stub},
+    )
+
+    for index, item in enumerate(data["output"]):
+        yield _sse(
+            "response.output_item.added",
+            {
+                "type": "response.output_item.added",
+                "output_index": index,
+                "item": item,
+            },
+        )
+        if item.get("type") == "message":
+            content = item.get("content") or []
+            if content:
+                yield _sse(
+                    "response.content_part.added",
+                    {
+                        "type": "response.content_part.added",
+                        "item_id": item["id"],
+                        "output_index": index,
+                        "content_index": 0,
+                        "part": content[0],
+                    },
+                )
+                text = content[0].get("text", "")
+                if text:
+                    yield _sse(
+                        "response.output_text.delta",
+                        {
+                            "type": "response.output_text.delta",
+                            "item_id": item["id"],
+                            "output_index": index,
+                            "content_index": 0,
+                            "delta": text,
+                        },
+                    )
+                yield _sse(
+                    "response.content_part.done",
+                    {
+                        "type": "response.content_part.done",
+                        "item_id": item["id"],
+                        "output_index": index,
+                        "content_index": 0,
+                        "part": content[0],
+                    },
+                )
+        yield _sse(
+            "response.output_item.done",
+            {
+                "type": "response.output_item.done",
+                "output_index": index,
+                "item": item,
+            },
+        )
+
+    completed = dict(data)
+    completed["status"] = "completed"
+    yield _sse(
+        "response.completed",
+        {"type": "response.completed", "response": completed},
+    )
 
 
 def _as_str_list(value: Any, field_name: str) -> list[str] | None:
