@@ -6,7 +6,7 @@ Loads configuration from environment variables with validation and type safety.
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -386,13 +386,20 @@ class Settings(BaseSettings):
     )
     openai_api_key: str = Field(
         default="",
-        alias="OPENAI_API_KEY",
-        description="Bedrock API key for bedrock-mantle endpoint"
+        validation_alias=AliasChoices("BEDROCK_API_KEY", "OPENAI_API_KEY"),
+        description=(
+            "Bedrock API key for Bedrock Mantle endpoint. "
+            "OPENAI_API_KEY is accepted as a deprecated fallback."
+        )
     )
     openai_base_url: str = Field(
         default="",
-        alias="OPENAI_BASE_URL",
-        description="Bedrock Mantle endpoint URL (e.g. https://bedrock-mantle.us-east-1.api.aws/v1)"
+        validation_alias=AliasChoices("MANTLE_ENDPOINT_URL", "OPENAI_BASE_URL"),
+        description=(
+            "Bedrock Mantle endpoint URL "
+            "(e.g. https://bedrock-mantle.us-east-1.api.aws/v1). "
+            "OPENAI_BASE_URL is accepted as a deprecated fallback."
+        )
     )
     openai_compat_thinking_high_threshold: int = Field(
         default=10000,

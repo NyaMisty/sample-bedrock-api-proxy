@@ -89,7 +89,7 @@
   - 支持流式和非流式响应
 - **OpenAI 兼容 API（Bedrock Mantle）**：非 Claude 模型可选择通过 Bedrock 的 OpenAI Chat Completions API（bedrock-mantle 端点）进行请求，替代 Converse API
   - 通过 `ENABLE_OPENAI_COMPAT` 环境变量控制，默认关闭
-  - 需要配置 `OPENAI_API_KEY`（Bedrock API Key）和 `OPENAI_BASE_URL`（如 `https://bedrock-mantle.us-east-1.api.aws/v1`）
+  - 需要配置 `BEDROCK_API_KEY`（Bedrock API Key）和 `MANTLE_ENDPOINT_URL`（如 `https://bedrock-mantle.us-east-1.api.aws/v1`）
   - 自动将 Anthropic `thinking` 配置映射为 OpenAI `reasoning`（`budget_tokens` → `effort: high/medium/low`）
   - 支持流式和非流式响应、工具调用、多模态内容
   - Claude 模型不受影响，仍使用 InvokeModel API
@@ -1038,15 +1038,21 @@ ENABLE_OPENAI_COMPAT=True
 ENABLE_OPENAI_PASSTHROUGH=True
 
 # Bedrock Mantle API Key
-OPENAI_API_KEY=your-bedrock-api-key
+BEDROCK_API_KEY=your-bedrock-api-key
 
 # Bedrock Mantle 端点 URL
-OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
+MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-east-1.api.aws/v1
+
+# 旧变量名仍作为 direct app/CDK 用法的兼容 fallback：
+# OPENAI_API_KEY=your-bedrock-api-key
+# OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
 
 # thinking → reasoning 映射阈值
 OPENAI_COMPAT_THINKING_HIGH_THRESHOLD=10000    # budget_tokens >= 此值 → effort=high
 OPENAI_COMPAT_THINKING_MEDIUM_THRESHOLD=4000   # budget_tokens >= 此值 → effort=medium
 ```
+
+当 `ENABLE_OPENAI_COMPAT=true` 时，`cdk/scripts/deploy.sh` 会要求必须传入 `BEDROCK_API_KEY`；该部署时校验不接受旧变量名 `OPENAI_API_KEY`。
 
 当 `ENABLE_OPENAI_PASSTHROUGH=True` 时，OpenAI SDK 客户端可以将代理地址加 `/openai/v1` 作为 `base_url`：
 

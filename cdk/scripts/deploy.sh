@@ -75,6 +75,15 @@ CACHE TTL (via environment variables):
     DEFAULT_CACHE_TTL=1h \\
     ./scripts/deploy.sh -e prod -p arm64
 
+OPENAI COMPAT / PASSTHROUGH (via environment variables):
+    Enable Bedrock Mantle-backed OpenAI compatibility:
+
+    ENABLE_OPENAI_COMPAT=true \\
+    ENABLE_OPENAI_PASSTHROUGH=true \\
+    BEDROCK_API_KEY=your-bedrock-api-key \\
+    MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-west-2.api.aws/v1 \\
+    ./scripts/deploy.sh -e prod -p arm64
+
 OTEL TRACING (via environment variables):
     Enable OpenTelemetry tracing by setting env vars before running this script:
 
@@ -154,6 +163,15 @@ fi
 # Validate launch type
 if [[ ! "$LAUNCH_TYPE" =~ ^(fargate|ec2)$ ]]; then
     echo -e "${RED}Error: Launch type must be 'fargate' or 'ec2'${NC}"
+    exit 1
+fi
+
+# Validate Bedrock Mantle credentials for new deployments.
+if [[ "$DESTROY" != true && "${ENABLE_OPENAI_COMPAT,,}" == "true" && -z "${BEDROCK_API_KEY:-}" ]]; then
+    echo -e "${RED}Error: BEDROCK_API_KEY is required when ENABLE_OPENAI_COMPAT=true.${NC}"
+    if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        echo -e "${YELLOW}OPENAI_API_KEY is deprecated for Bedrock Mantle. Use BEDROCK_API_KEY instead.${NC}"
+    fi
     exit 1
 fi
 

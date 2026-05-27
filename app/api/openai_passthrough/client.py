@@ -6,7 +6,7 @@ router so we can include the proxy's Bedrock API key in Authorization.
 URL building note: we deliberately do NOT set ``base_url`` on the AsyncClient.
 httpx follows RFC 3986 path-merging, which means a request path starting with
 ``/`` REPLACES the path component of the base_url. With
-``OPENAI_BASE_URL=https://bedrock-mantle.us-west-2.api.aws/v1``, calling
+``MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-west-2.api.aws/v1``, calling
 ``client.post("/chat/completions")`` would produce
 ``https://bedrock-mantle.us-west-2.api.aws/chat/completions`` (the ``/v1`` is
 dropped). To avoid this footgun we build full URLs explicitly via
@@ -41,13 +41,13 @@ def reset_client_for_testing() -> None:
 
 
 def upstream_url(path: str) -> str:
-    """Build a full upstream URL by appending ``path`` to ``OPENAI_BASE_URL``.
+    """Build a full upstream URL by appending ``path`` to the Mantle endpoint.
 
     Avoids httpx's RFC 3986 path-replacement behaviour by always producing a
     fully-qualified URL.
 
     Examples:
-        OPENAI_BASE_URL=https://bedrock-mantle.us-west-2.api.aws/v1
+        MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-west-2.api.aws/v1
         upstream_url("/chat/completions")  -> https://bedrock-mantle.us-west-2.api.aws/v1/chat/completions
         upstream_url("models")             -> https://bedrock-mantle.us-west-2.api.aws/v1/models
     """

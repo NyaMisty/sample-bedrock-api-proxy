@@ -435,7 +435,9 @@ export function getConfig(environmentName: string = 'dev'): EnvironmentConfig {
     enableOpenaiCompat,
     enableOpenaiPassthrough,
     enableCloudFront,
-    ...(process.env.OPENAI_BASE_URL && { openaiBaseUrl: process.env.OPENAI_BASE_URL }),
+    ...((process.env.MANTLE_ENDPOINT_URL || process.env.OPENAI_BASE_URL) && {
+      openaiBaseUrl: process.env.MANTLE_ENDPOINT_URL || process.env.OPENAI_BASE_URL,
+    }),
     ...(process.env.OTEL_EXPORTER_OTLP_ENDPOINT && { otelExporterEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT }),
     ...(process.env.OTEL_EXPORTER_OTLP_PROTOCOL && { otelExporterProtocol: process.env.OTEL_EXPORTER_OTLP_PROTOCOL }),
     ...(process.env.OTEL_EXPORTER_OTLP_HEADERS && { otelExporterHeaders: process.env.OTEL_EXPORTER_OTLP_HEADERS }),

@@ -91,7 +91,7 @@ This lightweight API convertion service enables you to use various large languag
   - Supports both streaming and non-streaming responses
 - **OpenAI-Compatible API (Bedrock Mantle)**: Non-Claude models can optionally use Bedrock's OpenAI Chat Completions API via bedrock-mantle endpoint instead of Converse API
   - Controlled by `ENABLE_OPENAI_COMPAT` environment variable (disabled by default)
-  - Requires `OPENAI_API_KEY` (Bedrock API Key) and `OPENAI_BASE_URL` (e.g., `https://bedrock-mantle.us-east-1.api.aws/v1`)
+  - Requires `BEDROCK_API_KEY` (Bedrock API Key) and `MANTLE_ENDPOINT_URL` (e.g., `https://bedrock-mantle.us-east-1.api.aws/v1`)
   - Automatically maps Anthropic `thinking` to OpenAI `reasoning` (`budget_tokens` → `effort: high/medium/low`)
   - Supports streaming and non-streaming responses, tool calling, multimodal content
   - Claude models remain unaffected, still using InvokeModel API
@@ -1102,15 +1102,21 @@ ENABLE_OPENAI_COMPAT=True
 ENABLE_OPENAI_PASSTHROUGH=True
 
 # Bedrock Mantle API Key
-OPENAI_API_KEY=your-bedrock-api-key
+BEDROCK_API_KEY=your-bedrock-api-key
 
 # Bedrock Mantle endpoint URL
-OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
+MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-east-1.api.aws/v1
+
+# Deprecated fallback names still work for direct app/CDK usage:
+# OPENAI_API_KEY=your-bedrock-api-key
+# OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
 
 # thinking → reasoning mapping thresholds
 OPENAI_COMPAT_THINKING_HIGH_THRESHOLD=10000    # budget_tokens >= this → effort=high
 OPENAI_COMPAT_THINKING_MEDIUM_THRESHOLD=4000   # budget_tokens >= this → effort=medium
 ```
+
+`cdk/scripts/deploy.sh` requires `BEDROCK_API_KEY` when `ENABLE_OPENAI_COMPAT=true`; the deprecated `OPENAI_API_KEY` name is not accepted by that deploy-time guard.
 
 When `ENABLE_OPENAI_PASSTHROUGH=True`, OpenAI SDK clients can use the proxy root plus `/openai/v1` as their `base_url`:
 
