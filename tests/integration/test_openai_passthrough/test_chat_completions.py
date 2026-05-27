@@ -64,7 +64,9 @@ def test_model_mapping_is_applied(
     assert sent["model"] == "openai.gpt-oss-120b"
 
 
-def test_chat_completions_web_search_shape_still_passthrough(client, respx_mock):
+def test_chat_completions_web_search_shape_still_passthrough(
+    client, respx_mock, mock_web_search_service, mock_bedrock_service
+):
     route = respx_mock.post("/chat/completions").mock(
         return_value=httpx.Response(
             200,
@@ -98,6 +100,9 @@ def test_chat_completions_web_search_shape_still_passthrough(client, respx_mock)
     assert route.called
     sent = json.loads(route.calls[0].request.content)
     assert sent["tools"] == [{"type": "web_search"}]
+    assert not mock_web_search_service.get_service_mock.called
+    assert not mock_web_search_service.handle_request.called
+    assert not mock_bedrock_service.constructor_mock.called
 
 
 def test_upstream_4xx_returned_verbatim(client, respx_mock, mock_usage_tracker):
