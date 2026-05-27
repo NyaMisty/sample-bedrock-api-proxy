@@ -94,7 +94,7 @@ async def get_dashboard_stats():
 
     # Calculate budget stats
     total_budget = sum(float(k.get("monthly_budget", 0) or 0) for k in all_keys)
-    total_budget_used = sum(float(k.get("budget_used", 0) or 0) for k in all_keys)
+    total_budget_used = sum(float(k.get("budget_used_mtd", 0) or 0) for k in all_keys)
 
     # Count new keys this week
     week_ago = int((datetime.now() - timedelta(days=7)).timestamp())
