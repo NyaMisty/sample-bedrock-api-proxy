@@ -157,8 +157,11 @@ async def responses_create(
         except OpenAIResponsesWebSearchError as exc:
             return JSONResponse(exc.to_error_body(), status_code=exc.status_code)
 
-        web_search_service = get_web_search_service()
-        bedrock_service = BedrockService()
+        try:
+            web_search_service = get_web_search_service()
+            bedrock_service = BedrockService()
+        except Exception as exc:
+            return _api_error_response(exc)
 
         if body.get("stream"):
             try:
