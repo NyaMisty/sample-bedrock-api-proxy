@@ -7,14 +7,19 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def mock_settings(monkeypatch):
+def web_search_enabled(request):
+    return getattr(request, "param", True)
+
+
+@pytest.fixture
+def mock_settings(monkeypatch, web_search_enabled):
     """Set the env so the passthrough router mounts and points at a fake mantle."""
     monkeypatch.setattr("app.core.config.settings.enable_openai_passthrough", True)
     monkeypatch.setattr("app.core.config.settings.openai_api_key", "bedrock-key-test")
     monkeypatch.setattr("app.core.config.settings.openai_base_url", "https://mantle.test/v1")
     monkeypatch.setattr("app.core.config.settings.require_api_key", True)
     monkeypatch.setattr("app.core.config.settings.master_api_key", "")
-    monkeypatch.setattr("app.core.config.settings.enable_web_search", True)
+    monkeypatch.setattr("app.core.config.settings.enable_web_search", web_search_enabled)
 
 
 @pytest.fixture
@@ -49,9 +54,11 @@ def mock_usage_tracker():
 def mock_web_search_service():
     service = MagicMock()
     service.handle_request = AsyncMock()
+    get_service = MagicMock(return_value=service)
+    service.get_service_mock = get_service
     with patch(
         "app.api.openai_passthrough.router.get_web_search_service",
-        return_value=service,
+        get_service,
         create=True,
     ):
         yield service
@@ -60,9 +67,11 @@ def mock_web_search_service():
 @pytest.fixture
 def mock_bedrock_service():
     service = MagicMock()
+    constructor = MagicMock(return_value=service)
+    service.constructor_mock = constructor
     with patch(
         "app.api.openai_passthrough.router.BedrockService",
-        return_value=service,
+        constructor,
         create=True,
     ):
         yield service

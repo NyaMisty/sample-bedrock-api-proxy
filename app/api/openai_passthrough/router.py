@@ -21,6 +21,7 @@ from app.api.openai_passthrough.streaming import (
 from app.api.openai_passthrough.usage_extractor import normalize_usage
 from app.api.openai_passthrough.web_search import (
     OpenAIResponsesWebSearchError,
+    ensure_web_search_enabled,
     handle_non_streaming_web_search,
     is_responses_web_search_request,
 )
@@ -135,6 +136,7 @@ async def responses_create(
         request_id = f"resp-{uuid4().hex}"
         service_tier = api_key_info.get("service_tier", "default")
         try:
+            ensure_web_search_enabled()
             data = await handle_non_streaming_web_search(
                 body,
                 web_search_service=get_web_search_service(),

@@ -2,8 +2,22 @@
 import json
 
 import httpx
+import pytest
 
 from app.schemas.anthropic import MessageResponse, Usage
+
+
+@pytest.fixture
+def fail_web_search_dependency_construction(
+    mock_web_search_service,
+    mock_bedrock_service,
+):
+    mock_web_search_service.get_service_mock.side_effect = AssertionError(
+        "get_web_search_service should not be called when web search is disabled"
+    )
+    mock_bedrock_service.constructor_mock.side_effect = AssertionError(
+        "BedrockService should not be constructed when web search is disabled"
+    )
 
 
 def test_non_streaming_responses_forwards_and_logs_usage(
@@ -185,3 +199,34 @@ def test_non_streaming_responses_web_search_uses_local_adapter_not_upstream(
     assert kw["api_surface"] == "responses"
     assert kw["input_tokens"] == 3
     assert kw["output_tokens"] == 2
+
+
+@pytest.mark.parametrize("web_search_enabled", [False], indirect=True)
+def test_non_streaming_responses_web_search_disabled_skips_local_dependencies(
+    fail_web_search_dependency_construction,
+    client,
+    respx_mock,
+    mock_usage_tracker,
+    mock_web_search_service,
+):
+    route = respx_mock.post("/responses").mock(
+        return_value=httpx.Response(500, json={"error": {"message": "should not call"}})
+    )
+
+    r = client.post(
+        "/openai/v1/responses",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "m",
+            "input": "Search the web",
+            "tools": [{"type": "web_search"}],
+        },
+    )
+
+    assert r.status_code == 400
+    data = r.json()
+    assert data["error"]["type"] == "invalid_request_error"
+    assert "disabled" in data["error"]["message"].lower()
+    assert not route.called
+    assert not mock_web_search_service.handle_request.called
+    assert not mock_usage_tracker.record_usage.called

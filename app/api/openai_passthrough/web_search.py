@@ -186,6 +186,11 @@ def build_response_json(
     return data
 
 
+def ensure_web_search_enabled() -> None:
+    if not settings.enable_web_search:
+        raise OpenAIResponsesWebSearchError("Web search is disabled")
+
+
 async def handle_non_streaming_web_search(
     body: dict[str, Any],
     *,
@@ -194,8 +199,7 @@ async def handle_non_streaming_web_search(
     request_id: str,
     service_tier: str,
 ) -> dict[str, Any]:
-    if not settings.enable_web_search:
-        raise OpenAIResponsesWebSearchError("Web search is disabled")
+    ensure_web_search_enabled()
     message_request = build_message_request(body)
     response = await web_search_service.handle_request(
         request=message_request,
