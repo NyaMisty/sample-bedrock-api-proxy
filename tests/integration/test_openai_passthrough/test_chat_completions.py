@@ -1,4 +1,5 @@
 """Integration tests for POST /openai/v1/chat/completions."""
+
 import json
 
 import httpx
@@ -11,7 +12,13 @@ def test_non_streaming_chat_completions_forwards_and_logs_usage(
         "id": "chatcmpl-1",
         "object": "chat.completion",
         "model": "openai.gpt-oss-120b",
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop",
+            }
+        ],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
     }
     route = respx_mock.post("/chat/completions").mock(
@@ -44,14 +51,21 @@ def test_non_streaming_chat_completions_forwards_and_logs_usage(
     assert kwargs["model"] == "openai.gpt-oss-120b"
 
 
-def test_model_mapping_is_applied(
-    client, respx_mock, mock_model_mapping_manager
-):
+def test_model_mapping_is_applied(client, respx_mock, mock_model_mapping_manager):
     mock_model_mapping_manager.get_mapping.return_value = "openai.gpt-oss-120b"
     route = respx_mock.post("/chat/completions").mock(
-        return_value=httpx.Response(200, json={
-            "id": "x", "choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "x",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
     )
 
     client.post(
@@ -81,7 +95,11 @@ def test_chat_completions_web_search_shape_still_passthrough(
                         "finish_reason": "stop",
                     }
                 ],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
             },
         )
     )
@@ -106,7 +124,9 @@ def test_chat_completions_web_search_shape_still_passthrough(
 
 
 def test_upstream_4xx_returned_verbatim(client, respx_mock, mock_usage_tracker):
-    err_body = {"error": {"message": "model not found", "type": "invalid_request_error"}}
+    err_body = {
+        "error": {"message": "model not found", "type": "invalid_request_error"}
+    }
     respx_mock.post("/chat/completions").mock(
         return_value=httpx.Response(404, json=err_body)
     )
@@ -137,7 +157,7 @@ def test_streaming_chat_completions_forwards_sse_and_records_usage(
         'data: {"id":"x","choices":[{"index":0,"delta":{"role":"assistant"}}]}',
         'data: {"id":"x","choices":[{"index":0,"delta":{"content":"hi"}}]}',
         'data: {"id":"x","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}',
-        'data: [DONE]',
+        "data: [DONE]",
     ]
     body = "\n".join(sse_lines).encode()
     respx_mock.post("/chat/completions").mock(
@@ -162,7 +182,7 @@ def test_streaming_chat_completions_forwards_sse_and_records_usage(
 
     # All four lines forwarded
     assert b'"delta":{"role":"assistant"}' in out
-    assert b'[DONE]' in out
+    assert b"[DONE]" in out
     # Usage recorded from the chunk that had it
     assert mock_usage_tracker.record_usage.called
     kw = mock_usage_tracker.record_usage.call_args.kwargs
@@ -177,7 +197,7 @@ def test_streaming_chat_completions_without_include_usage_does_not_log(
     """If client doesn't request usage, no usage chunk arrives → no usage logged."""
     sse_lines = [
         'data: {"id":"x","choices":[{"index":0,"delta":{"content":"hi"}}]}',
-        'data: [DONE]',
+        "data: [DONE]",
     ]
     body = "\n".join(sse_lines).encode()
     respx_mock.post("/chat/completions").mock(
@@ -187,7 +207,8 @@ def test_streaming_chat_completions_without_include_usage_does_not_log(
     )
 
     with client.stream(
-        "POST", "/openai/v1/chat/completions",
+        "POST",
+        "/openai/v1/chat/completions",
         headers={"Authorization": "Bearer sk-test"},
         json={"model": "m", "messages": [], "stream": True},
     ) as r:
@@ -197,14 +218,15 @@ def test_streaming_chat_completions_without_include_usage_does_not_log(
 
 
 def test_streaming_chat_completions_does_not_inject_event_lines(
-    client, respx_mock,
+    client,
+    respx_mock,
 ):
     """Chat Completions SSE per OpenAI spec is data-only (no `event:` lines).
     The proxy must NOT synthesize event: lines for this api_surface.
     """
     sse_lines = [
         'data: {"id":"x","choices":[{"index":0,"delta":{"content":"hi"}}]}',
-        'data: [DONE]',
+        "data: [DONE]",
     ]
     body = "\n".join(sse_lines).encode()
     respx_mock.post("/chat/completions").mock(
@@ -214,22 +236,33 @@ def test_streaming_chat_completions_does_not_inject_event_lines(
     )
 
     with client.stream(
-        "POST", "/openai/v1/chat/completions",
+        "POST",
+        "/openai/v1/chat/completions",
         headers={"Authorization": "Bearer sk-test"},
         json={"model": "m", "messages": [], "stream": True},
     ) as r:
         out = b"".join(r.iter_bytes()).decode()
 
-    assert "event: " not in out, f"chat completions stream should not contain event: lines, got:\n{out}"
+    assert (
+        "event: " not in out
+    ), f"chat completions stream should not contain event: lines, got:\n{out}"
 
 
 def test_bedrock_guardrail_headers_are_forwarded(client, respx_mock):
     """X-Amzn-Bedrock-* headers from the client should reach the upstream call."""
     route = respx_mock.post("/chat/completions").mock(
-        return_value=httpx.Response(200, json={
-            "id": "x", "choices": [],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "x",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
     )
     client.post(
         "/openai/v1/chat/completions",

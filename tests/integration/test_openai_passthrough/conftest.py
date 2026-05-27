@@ -1,4 +1,5 @@
 """Shared fixtures for openai-passthrough integration tests."""
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,10 +17,14 @@ def mock_settings(monkeypatch, web_search_enabled):
     """Set the env so the passthrough router mounts and points at a fake mantle."""
     monkeypatch.setattr("app.core.config.settings.enable_openai_passthrough", True)
     monkeypatch.setattr("app.core.config.settings.openai_api_key", "bedrock-key-test")
-    monkeypatch.setattr("app.core.config.settings.openai_base_url", "https://mantle.test/v1")
+    monkeypatch.setattr(
+        "app.core.config.settings.openai_base_url", "https://mantle.test/v1"
+    )
     monkeypatch.setattr("app.core.config.settings.require_api_key", True)
     monkeypatch.setattr("app.core.config.settings.master_api_key", "")
-    monkeypatch.setattr("app.core.config.settings.enable_web_search", web_search_enabled)
+    monkeypatch.setattr(
+        "app.core.config.settings.enable_web_search", web_search_enabled
+    )
 
 
 @pytest.fixture
@@ -27,8 +32,11 @@ def mock_api_key_manager():
     """Patch APIKeyManager so any non-empty key validates as user 'u1'."""
     manager = MagicMock()
     manager.validate_api_key.return_value = {
-        "api_key": "sk-test", "user_id": "u1", "is_master": False,
-        "rate_limit": None, "cache_ttl": None,
+        "api_key": "sk-test",
+        "user_id": "u1",
+        "is_master": False,
+        "rate_limit": None,
+        "cache_ttl": None,
     }
     with patch("app.middleware.auth.APIKeyManager", return_value=manager):
         yield manager
@@ -39,7 +47,9 @@ def mock_model_mapping_manager():
     """Patch ModelMappingManager to return None (no mapping) by default."""
     manager = MagicMock()
     manager.get_mapping.return_value = None
-    with patch("app.api.openai_passthrough.router.ModelMappingManager", return_value=manager):
+    with patch(
+        "app.api.openai_passthrough.router.ModelMappingManager", return_value=manager
+    ):
         yield manager
 
 
@@ -80,7 +90,9 @@ def mock_bedrock_service():
 @pytest.fixture
 def respx_mock():
     """respx mock router for httpx calls."""
-    with respx.mock(base_url="https://mantle.test/v1", assert_all_called=False) as router:
+    with respx.mock(
+        base_url="https://mantle.test/v1", assert_all_called=False
+    ) as router:
         yield router
 
 
@@ -102,6 +114,7 @@ def client(
 
     # Reset httpx singleton so it picks up the patched base URL
     from app.api.openai_passthrough.client import reset_client_for_testing
+
     reset_client_for_testing()
 
     # Access the actual router MODULE (not the APIRouter instance) via sys.modules.
@@ -112,6 +125,7 @@ def client(
 
     # Ensure the router module is loaded
     import app.api.openai_passthrough.router  # noqa: F401  (triggers module load)
+
     _router_module = _sys.modules["app.api.openai_passthrough.router"]
 
     # Reset DDB manager cache so each test gets fresh mock instances
@@ -119,10 +133,13 @@ def client(
     _router_module._mapping = None
     _router_module._usage = None
 
-    with patch("app.api.openai_passthrough.router.DynamoDBClient", return_value=MagicMock()):
+    with patch(
+        "app.api.openai_passthrough.router.DynamoDBClient", return_value=MagicMock()
+    ):
         # Reload app.main so the conditional router mount re-evaluates with
         # settings.enable_openai_passthrough=True (set by mock_settings above).
         import app.main as _main_mod
+
         importlib.reload(_main_mod)
 
         # Reset again after reload (reload may reinitialise globals)

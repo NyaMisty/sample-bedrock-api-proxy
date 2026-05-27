@@ -50,7 +50,9 @@ def _first_payload(
 def test_is_responses_web_search_request_detects_current_and_preview_tools():
     assert is_responses_web_search_request({"tools": [{"type": "web_search"}]})
     assert is_responses_web_search_request({"tools": [{"type": "web_search_preview"}]})
-    assert not is_responses_web_search_request({"tools": [{"type": "function", "name": "x"}]})
+    assert not is_responses_web_search_request(
+        {"tools": [{"type": "function", "name": "x"}]}
+    )
     assert not is_responses_web_search_request({"input": "hi"})
 
 

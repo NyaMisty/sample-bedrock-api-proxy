@@ -2,6 +2,7 @@
 
 Mounted at /openai/v1 only when settings.enable_openai_passthrough is True.
 """
+
 from __future__ import annotations
 
 import logging
@@ -51,7 +52,12 @@ def _managers() -> tuple[ModelMappingManager, UsageTracker]:
     return _mapping, _usage
 
 
-def _record_usage(api_key_info: dict[str, Any], raw_usage: dict[str, Any], model: str, api_surface: str) -> None:
+def _record_usage(
+    api_key_info: dict[str, Any],
+    raw_usage: dict[str, Any],
+    model: str,
+    api_surface: str,
+) -> None:
     _, usage = _managers()
     norm = normalize_usage(raw_usage, api_surface)
     try:

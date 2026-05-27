@@ -3,6 +3,7 @@
 This module adapts OpenAI Responses requests that use the hosted web_search
 tool to the proxy's existing Anthropic Messages web search implementation.
 """
+
 from __future__ import annotations
 
 import json
@@ -348,7 +349,9 @@ def _parse_user_location(raw: Any) -> UserLocation | None:
                 f"user_location.{field_name} must be a string"
             )
     if raw.get("type", "approximate") != "approximate":
-        raise OpenAIResponsesWebSearchError("Only approximate user_location is supported")
+        raise OpenAIResponsesWebSearchError(
+            "Only approximate user_location is supported"
+        )
     return UserLocation(
         type="approximate",
         city=raw.get("city"),
@@ -497,7 +500,9 @@ def _tool_choice(body: dict[str, Any]) -> Any:
         function = choice.get("function")
         if isinstance(function, dict) and function.get("name") == "web_search":
             return {"type": "tool", "name": "web_search"}
-    raise OpenAIResponsesWebSearchError("Only auto or web_search tool_choice is supported")
+    raise OpenAIResponsesWebSearchError(
+        "Only auto or web_search tool_choice is supported"
+    )
 
 
 def build_message_request(body: dict[str, Any]) -> MessageRequest:
