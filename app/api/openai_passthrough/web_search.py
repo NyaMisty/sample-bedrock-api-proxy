@@ -109,7 +109,9 @@ def extract_web_search_options(body: dict[str, Any]) -> OpenAIWebSearchOptions:
                 "return_token_budget is not supported by this proxy"
             )
 
-        filters = tool.get("filters") or {}
+        filters = tool.get("filters")
+        if filters is None:
+            filters = {}
         if not isinstance(filters, dict):
             raise OpenAIResponsesWebSearchError("filters must be an object")
 

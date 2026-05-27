@@ -67,6 +67,13 @@ def test_extract_web_search_options_rejects_return_token_budget():
     assert "return_token_budget" in exc.value.message
 
 
+def test_extract_web_search_options_rejects_present_non_object_filters():
+    with pytest.raises(OpenAIResponsesWebSearchError) as exc:
+        extract_web_search_options({"tools": [{"type": "web_search", "filters": []}]})
+
+    assert "filters" in exc.value.message
+
+
 def test_extract_web_search_options_rejects_conflicting_multiple_tools():
     with pytest.raises(OpenAIResponsesWebSearchError) as exc:
         extract_web_search_options(
