@@ -2,6 +2,7 @@
 
 Mounted at /openai/v1 only when settings.enable_openai_passthrough is True.
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,8 +20,19 @@ from app.api.openai_passthrough.streaming import (
     stream_passthrough_response,
 )
 from app.api.openai_passthrough.usage_extractor import normalize_usage
+from app.api.openai_passthrough.web_search import (
+    OpenAIResponsesWebSearchError,
+    build_message_request,
+    build_response_json,
+    ensure_web_search_enabled,
+    handle_non_streaming_web_search,
+    is_responses_web_search_request,
+    stream_response_events,
+)
 from app.db.dynamodb import DynamoDBClient, ModelMappingManager, UsageTracker
 from app.middleware.auth import get_api_key_info
+from app.services.bedrock_service import BedrockService
+from app.services.web_search_service import get_web_search_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -40,7 +52,12 @@ def _managers() -> tuple[ModelMappingManager, UsageTracker]:
     return _mapping, _usage
 
 
-def _record_usage(api_key_info: dict[str, Any], raw_usage: dict[str, Any], model: str, api_surface: str) -> None:
+def _record_usage(
+    api_key_info: dict[str, Any],
+    raw_usage: dict[str, Any],
+    model: str,
+    api_surface: str,
+) -> None:
     _, usage = _managers()
     norm = normalize_usage(raw_usage, api_surface)
     try:
@@ -57,6 +74,13 @@ def _record_usage(api_key_info: dict[str, Any], raw_usage: dict[str, Any], model
         )
     except Exception as exc:
         logger.warning("[OPENAI-PASSTHROUGH] usage recording failed: %s", exc)
+
+
+def _api_error_response(exc: Exception) -> JSONResponse:
+    return JSONResponse(
+        {"error": {"message": str(exc), "type": "api_error"}},
+        status_code=500,
+    )
 
 
 def _passthrough_extra_headers(request: Request) -> dict[str, str]:
@@ -123,6 +147,67 @@ async def responses_create(
     mapping, _ = _managers()
     body["model"] = resolve_model_id(body.get("model", ""), mapping)
     extra = _passthrough_extra_headers(request)
+
+    if is_responses_web_search_request(body):
+        request_id = f"resp-{uuid4().hex}"
+        service_tier = api_key_info.get("service_tier", "default")
+        try:
+            ensure_web_search_enabled()
+            message_request = build_message_request(body)
+        except OpenAIResponsesWebSearchError as exc:
+            return JSONResponse(exc.to_error_body(), status_code=exc.status_code)
+
+        try:
+            web_search_service = get_web_search_service()
+            bedrock_service = BedrockService()
+        except Exception as exc:
+            return _api_error_response(exc)
+
+        if body.get("stream"):
+            try:
+                response = await web_search_service.handle_request(
+                    request=message_request,
+                    bedrock_service=bedrock_service,
+                    request_id=request_id,
+                    service_tier=service_tier,
+                    anthropic_beta=None,
+                )
+            except Exception as exc:
+                return _api_error_response(exc)
+
+            data = build_response_json(
+                response,
+                original_model=body.get("model", ""),
+                response_id=request_id,
+            )
+            if isinstance(data.get("usage"), dict):
+                _record_usage(api_key_info, data["usage"], body["model"], "responses")
+
+            return StreamingResponse(
+                stream_response_events(
+                    response,
+                    original_model=body.get("model", ""),
+                    response_id=request_id,
+                    response_data=data,
+                ),
+                media_type="text/event-stream",
+            )
+
+        try:
+            data = await handle_non_streaming_web_search(
+                body,
+                web_search_service=web_search_service,
+                bedrock_service=bedrock_service,
+                request_id=request_id,
+                service_tier=service_tier,
+            )
+        except OpenAIResponsesWebSearchError as exc:
+            return JSONResponse(exc.to_error_body(), status_code=exc.status_code)
+        except Exception as exc:
+            return _api_error_response(exc)
+        if isinstance(data.get("usage"), dict):
+            _record_usage(api_key_info, data["usage"], body["model"], "responses")
+        return JSONResponse(data, status_code=200)
 
     if body.get("stream"):
         try:

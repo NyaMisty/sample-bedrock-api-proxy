@@ -95,6 +95,14 @@ This lightweight API convertion service enables you to use various large languag
   - Automatically maps Anthropic `thinking` to OpenAI `reasoning` (`budget_tokens` → `effort: high/medium/low`)
   - Supports streaming and non-streaming responses, tool calling, multimodal content
   - Claude models remain unaffected, still using InvokeModel API
+- **OpenAI Passthrough API**: Mounts `/openai/v1/*` endpoints and forwards OpenAI SDK requests to Bedrock Mantle
+  - Controlled by `ENABLE_OPENAI_PASSTHROUGH` environment variable (disabled by default)
+  - Supports `/openai/v1/models`, `/openai/v1/chat/completions`, `/openai/v1/responses`, and Responses CRUD helper endpoints
+  - Preserves Chat Completions passthrough semantics, including `tools` payloads
+- **Responses API Web Search Compatibility**: `POST /openai/v1/responses` can execute `tools: [{"type": "web_search"}]` proxy-side using the existing Tavily/Brave web search providers
+  - Applies only to Responses API; Chat Completions remains passthrough
+  - Supports streaming and non-streaming Responses output shapes with `web_search_call`, message output, `output_text`, and usage mapping
+  - Live search is supported; `external_web_access: false` and `return_token_budget` are rejected by the proxy-managed path
 
 ### Infrastructure
 - **Authentication**: API key-based authentication with DynamoDB storage
@@ -1080,14 +1088,18 @@ ENABLE_DOCUMENT_SUPPORT=True
 PROMPT_CACHING_ENABLED=False
 ENABLE_PROGRAMMATIC_TOOL_CALLING=True  # Requires Docker
 ENABLE_WEB_SEARCH=True                # Requires search provider API key
-ENABLE_OPENAI_COMPAT=False           # Use OpenAI Chat Completions API (non-Claude models)
+ENABLE_OPENAI_COMPAT=True            # Use OpenAI Chat Completions API (non-Claude models)
+ENABLE_OPENAI_PASSTHROUGH=True       # Mount /openai/v1/* passthrough endpoints
 DEFAULT_CACHE_TTL=1h                  # Proxy default cache TTL (optional: '5m' or '1h')
 ```
 
 #### OpenAI-Compatible API Configuration
 ```bash
-# Enable OpenAI-compatible API (only affects non-Claude models)
-ENABLE_OPENAI_COMPAT=False
+# Enable OpenAI-compatible API (only affects non-Claude models; default: False)
+ENABLE_OPENAI_COMPAT=True
+
+# Enable OpenAI SDK-compatible passthrough endpoints under /openai/v1/* (default: False)
+ENABLE_OPENAI_PASSTHROUGH=True
 
 # Bedrock Mantle API Key
 OPENAI_API_KEY=your-bedrock-api-key
@@ -1098,6 +1110,24 @@ OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
 # thinking → reasoning mapping thresholds
 OPENAI_COMPAT_THINKING_HIGH_THRESHOLD=10000    # budget_tokens >= this → effort=high
 OPENAI_COMPAT_THINKING_MEDIUM_THRESHOLD=4000   # budget_tokens >= this → effort=medium
+```
+
+When `ENABLE_OPENAI_PASSTHROUGH=True`, OpenAI SDK clients can use the proxy root plus `/openai/v1` as their `base_url`:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://your-proxy.example.com/openai/v1",
+    api_key="sk-your-proxy-api-key",
+)
+
+response = client.responses.create(
+    model="openai.gpt-oss-120b",
+    tools=[{"type": "web_search"}],
+    input="Search the web for one current positive technology news story.",
+)
+print(response.output_text)
 ```
 
 #### Web Search Configuration
@@ -1593,5 +1623,3 @@ Contributions are welcome! Please:
 ## License
 
 MIT-0
-
-

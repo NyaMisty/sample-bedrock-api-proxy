@@ -93,6 +93,14 @@
   - 自动将 Anthropic `thinking` 配置映射为 OpenAI `reasoning`（`budget_tokens` → `effort: high/medium/low`）
   - 支持流式和非流式响应、工具调用、多模态内容
   - Claude 模型不受影响，仍使用 InvokeModel API
+- **OpenAI Passthrough API**：挂载 `/openai/v1/*` 端点，并将 OpenAI SDK 请求透传到 Bedrock Mantle
+  - 通过 `ENABLE_OPENAI_PASSTHROUGH` 环境变量控制，默认关闭
+  - 支持 `/openai/v1/models`、`/openai/v1/chat/completions`、`/openai/v1/responses` 以及 Responses CRUD 辅助端点
+  - Chat Completions 保持透传语义，包括 `tools` 请求体
+- **Responses API Web Search 兼容**：`POST /openai/v1/responses` 可以通过现有 Tavily/Brave 搜索提供商在代理侧执行 `tools: [{"type": "web_search"}]`
+  - 该能力仅适用于 Responses API；Chat Completions 继续保持透传
+  - 支持流式和非流式 Responses 输出结构，包括 `web_search_call`、message output、`output_text` 和 usage 映射
+  - 当前支持实时搜索；`external_web_access: false` 和 `return_token_budget` 会被代理侧路径拒绝
 
 ### 基础设施
 - **身份验证**：基于 API 密钥的身份验证，使用 DynamoDB 存储
@@ -1016,14 +1024,18 @@ ENABLE_DOCUMENT_SUPPORT=True
 PROMPT_CACHING_ENABLED=False
 ENABLE_PROGRAMMATIC_TOOL_CALLING=True  # 需要 Docker
 ENABLE_WEB_SEARCH=True                # 需要搜索提供商 API 密钥
-ENABLE_OPENAI_COMPAT=False           # 使用 OpenAI Chat Completions API（非 Claude 模型）
+ENABLE_OPENAI_COMPAT=True            # 使用 OpenAI Chat Completions API（非 Claude 模型）
+ENABLE_OPENAI_PASSTHROUGH=True       # 挂载 /openai/v1/* 透传端点
 DEFAULT_CACHE_TTL=1h                  # 代理默认缓存 TTL（可选：'5m' 或 '1h'）
 ```
 
 #### OpenAI 兼容 API 配置
 ```bash
-# 启用 OpenAI 兼容 API（仅对非 Claude 模型生效）
-ENABLE_OPENAI_COMPAT=False
+# 启用 OpenAI 兼容 API（仅对非 Claude 模型生效；默认：False）
+ENABLE_OPENAI_COMPAT=True
+
+# 启用 OpenAI SDK 兼容透传端点（/openai/v1/*；默认：False）
+ENABLE_OPENAI_PASSTHROUGH=True
 
 # Bedrock Mantle API Key
 OPENAI_API_KEY=your-bedrock-api-key
@@ -1034,6 +1046,24 @@ OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
 # thinking → reasoning 映射阈值
 OPENAI_COMPAT_THINKING_HIGH_THRESHOLD=10000    # budget_tokens >= 此值 → effort=high
 OPENAI_COMPAT_THINKING_MEDIUM_THRESHOLD=4000   # budget_tokens >= 此值 → effort=medium
+```
+
+当 `ENABLE_OPENAI_PASSTHROUGH=True` 时，OpenAI SDK 客户端可以将代理地址加 `/openai/v1` 作为 `base_url`：
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://your-proxy.example.com/openai/v1",
+    api_key="sk-your-proxy-api-key",
+)
+
+response = client.responses.create(
+    model="openai.gpt-oss-120b",
+    tools=[{"type": "web_search"}],
+    input="Search the web for one current positive technology news story.",
+)
+print(response.output_text)
 ```
 
 #### Web 搜索配置
