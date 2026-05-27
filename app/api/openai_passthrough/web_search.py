@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -21,6 +22,8 @@ from app.schemas.anthropic import Message, MessageRequest, MessageResponse
 from app.schemas.web_search import UserLocation
 
 OPENAI_WEB_SEARCH_TOOL_TYPES = {"web_search", "web_search_preview"}
+_MAX_RESPONSE_CONTEXTS = 100
+_RESPONSE_CONTEXTS: OrderedDict[str, list[Message]] = OrderedDict()
 
 
 class OpenAIResponsesWebSearchError(Exception):
@@ -48,6 +51,40 @@ class OpenAIWebSearchOptions:
     blocked_domains: list[str] | None = None
     user_location: UserLocation | None = None
     search_context_size: str | None = None
+
+
+def clear_response_context_store() -> None:
+    """Clear stored local Responses context. Intended for tests."""
+    _RESPONSE_CONTEXTS.clear()
+
+
+def _copy_message(message: Message) -> Message:
+    dumped = message.model_dump()
+    return Message(role=dumped["role"], content=_content_text(dumped["content"]))
+
+
+def remember_response_context(
+    response_id: str,
+    request: MessageRequest,
+    response_data: dict[str, Any],
+) -> None:
+    """Store local context for future ``previous_response_id`` requests.
+
+    This applies only to proxy-managed Responses web_search calls. Bedrock
+    Mantle passthrough continues to own its own state for non-local paths.
+    """
+    if not response_id:
+        return
+
+    messages = [_copy_message(message) for message in request.messages]
+    output_text = response_data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        messages.append(Message(role="assistant", content=output_text))
+
+    _RESPONSE_CONTEXTS[response_id] = messages
+    _RESPONSE_CONTEXTS.move_to_end(response_id)
+    while len(_RESPONSE_CONTEXTS) > _MAX_RESPONSE_CONTEXTS:
+        _RESPONSE_CONTEXTS.popitem(last=False)
 
 
 def _web_search_tools(body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -211,7 +248,13 @@ async def handle_non_streaming_web_search(
         service_tier=service_tier,
         anthropic_beta=None,
     )
-    return build_response_json(response, original_model=body.get("model", ""))
+    data = build_response_json(
+        response,
+        original_model=body.get("model", ""),
+        response_id=request_id,
+    )
+    remember_response_context(data["id"], message_request, data)
+    return data
 
 
 def _sse(event_type: str, payload: dict[str, Any]) -> bytes:
@@ -468,6 +511,25 @@ def _convert_input_to_messages(input_value: Any) -> list[Message]:
     return messages
 
 
+def _messages_with_previous_context(body: dict[str, Any]) -> list[Message]:
+    messages = _convert_input_to_messages(body.get("input"))
+    previous_response_id = body.get("previous_response_id")
+    if previous_response_id is None:
+        return messages
+    if not isinstance(previous_response_id, str) or not previous_response_id.strip():
+        raise OpenAIResponsesWebSearchError("previous_response_id must be a string")
+
+    previous_messages = _RESPONSE_CONTEXTS.get(previous_response_id)
+    if previous_messages is None:
+        raise OpenAIResponsesWebSearchError(
+            f"previous_response_id {previous_response_id!r} was not found",
+            status_code=404,
+        )
+
+    _RESPONSE_CONTEXTS.move_to_end(previous_response_id)
+    return [_copy_message(message) for message in previous_messages] + messages
+
+
 def _max_tokens(body: dict[str, Any]) -> int:
     if "max_output_tokens" in body:
         max_tokens_value = body["max_output_tokens"]
@@ -527,7 +589,7 @@ def build_message_request(body: dict[str, Any]) -> MessageRequest:
     try:
         return MessageRequest(
             model=str(body.get("model") or ""),
-            messages=_convert_input_to_messages(body.get("input")),
+            messages=_messages_with_previous_context(body),
             max_tokens=max_tokens,
             system=body.get("instructions"),
             temperature=body.get("temperature"),

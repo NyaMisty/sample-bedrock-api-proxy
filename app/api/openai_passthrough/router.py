@@ -27,6 +27,7 @@ from app.api.openai_passthrough.web_search import (
     ensure_web_search_enabled,
     handle_non_streaming_web_search,
     is_responses_web_search_request,
+    remember_response_context,
     stream_response_events,
 )
 from app.db.dynamodb import DynamoDBClient, ModelMappingManager, UsageTracker
@@ -180,6 +181,7 @@ async def responses_create(
                 original_model=body.get("model", ""),
                 response_id=request_id,
             )
+            remember_response_context(data["id"], message_request, data)
             if isinstance(data.get("usage"), dict):
                 _record_usage(api_key_info, data["usage"], body["model"], "responses")
 
