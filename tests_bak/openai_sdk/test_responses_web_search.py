@@ -95,7 +95,11 @@ def _output_text(response: Any, response_data: dict[str, Any]) -> str:
     return ""
 
 
-def _assert_non_streaming_response(response: Any) -> dict[str, Any]:
+def _assert_non_streaming_response(
+    response: Any,
+    *,
+    require_web_search_call: bool = True,
+) -> dict[str, Any]:
     data = _response_to_dict(response)
     items = _output_items(data)
     item_types = [item.get("type") for item in items]
@@ -105,7 +109,7 @@ def _assert_non_streaming_response(response: Any) -> dict[str, Any]:
         raise AssertionError(f"expected object=response, got {data.get('object')!r}")
     if data.get("status") != "completed":
         raise AssertionError(f"expected status=completed, got {data.get('status')!r}")
-    if "web_search_call" not in item_types:
+    if require_web_search_call and "web_search_call" not in item_types:
         raise AssertionError(f"expected a web_search_call output item, got {item_types!r}")
     if "message" not in item_types:
         raise AssertionError(f"expected a message output item, got {item_types!r}")
@@ -157,7 +161,10 @@ def run_stateful(client: OpenAI, model: str) -> None:
             "to remember? Answer with only the marker."
         ),
     )
-    follow_up_summary = _assert_non_streaming_response(follow_up)
+    follow_up_summary = _assert_non_streaming_response(
+        follow_up,
+        require_web_search_call=False,
+    )
     output_text = str(follow_up_summary["output_text"]).lower()
     if STATEFUL_MARKER not in output_text:
         raise AssertionError(
