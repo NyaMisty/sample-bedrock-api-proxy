@@ -4,9 +4,11 @@ import pytest
 
 from app.api.openai_passthrough.web_search import (
     OpenAIResponsesWebSearchError,
+    build_message_request,
     extract_web_search_options,
     is_responses_web_search_request,
 )
+from app.schemas.anthropic import MessageRequest
 
 
 def test_is_responses_web_search_request_detects_current_and_preview_tools():
@@ -87,3 +89,75 @@ def test_extract_web_search_options_rejects_conflicting_multiple_tools():
 
     assert exc.value.status_code == 400
     assert "Conflicting" in exc.value.message
+
+
+def test_build_message_request_converts_string_input_and_instructions():
+    req = build_message_request(
+        {
+            "model": "openai.gpt-oss-120b",
+            "instructions": "Be concise.",
+            "input": "What changed in Python 3.13?",
+            "max_output_tokens": 777,
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "tools": [{"type": "web_search"}],
+        }
+    )
+
+    assert isinstance(req, MessageRequest)
+    assert req.model == "openai.gpt-oss-120b"
+    assert req.max_tokens == 777
+    assert req.system is not None
+    assert req.messages[0].role == "user"
+    assert req.messages[0].content[0].text == "What changed in Python 3.13?"
+    assert req.temperature == 0.2
+    assert req.top_p == 0.9
+    assert req.tools == [{"type": "web_search_20250305", "name": "web_search"}]
+
+
+def test_build_message_request_converts_responses_input_array_and_filters():
+    req = build_message_request(
+        {
+            "model": "m",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Find current news"}],
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "What topic?"}],
+                },
+                {
+                    "role": "user",
+                    "content": "AI infrastructure",
+                },
+            ],
+            "tools": [
+                {
+                    "type": "web_search",
+                    "filters": {"allowed_domains": ["example.com"]},
+                }
+            ],
+        }
+    )
+
+    assert [m.role for m in req.messages] == ["user", "assistant", "user"]
+    assert req.messages[0].content[0].text == "Find current news"
+    assert req.messages[1].content[0].text == "What topic?"
+    assert req.messages[2].content[0].text == "AI infrastructure"
+    assert req.tools == [
+        {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "allowed_domains": ["example.com"],
+        }
+    ]
+
+
+def test_build_message_request_rejects_missing_input():
+    with pytest.raises(OpenAIResponsesWebSearchError) as exc:
+        build_message_request({"model": "m", "tools": [{"type": "web_search"}]})
+
+    assert exc.value.status_code == 400
+    assert "input" in exc.value.message
