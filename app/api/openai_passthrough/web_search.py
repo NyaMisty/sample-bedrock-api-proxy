@@ -197,13 +197,14 @@ def ensure_web_search_enabled() -> None:
 async def handle_non_streaming_web_search(
     body: dict[str, Any],
     *,
+    message_request: MessageRequest | None = None,
     web_search_service: Any,
     bedrock_service: Any,
     request_id: str,
     service_tier: str,
 ) -> dict[str, Any]:
     ensure_web_search_enabled()
-    message_request = build_message_request(body)
+    message_request = message_request or build_message_request(body)
     response = await web_search_service.handle_request(
         request=message_request,
         bedrock_service=bedrock_service,
@@ -211,7 +212,12 @@ async def handle_non_streaming_web_search(
         service_tier=service_tier,
         anthropic_beta=None,
     )
-    return build_response_json(response, original_model=body.get("model", ""))
+    data = build_response_json(
+        response,
+        original_model=body.get("model", ""),
+        response_id=request_id,
+    )
+    return data
 
 
 def _sse(event_type: str, payload: dict[str, Any]) -> bytes:
@@ -468,6 +474,29 @@ def _convert_input_to_messages(input_value: Any) -> list[Message]:
     return messages
 
 
+def _copy_message(message: Message) -> Message:
+    dumped = message.model_dump()
+    return Message(role=dumped["role"], content=_content_text(dumped.get("content")))
+
+
+def _messages_with_previous_context(
+    body: dict[str, Any],
+    previous_messages: list[Message] | None,
+) -> list[Message]:
+    messages = _convert_input_to_messages(body.get("input"))
+    previous_response_id = body.get("previous_response_id")
+    if previous_response_id is None:
+        return messages
+    if not isinstance(previous_response_id, str) or not previous_response_id.strip():
+        raise OpenAIResponsesWebSearchError("previous_response_id must be a string")
+    if previous_messages is None:
+        raise OpenAIResponsesWebSearchError(
+            f"previous_response_id {previous_response_id!r} was not found",
+            status_code=404,
+        )
+    return [_copy_message(message) for message in previous_messages] + messages
+
+
 def _max_tokens(body: dict[str, Any]) -> int:
     if "max_output_tokens" in body:
         max_tokens_value = body["max_output_tokens"]
@@ -507,7 +536,11 @@ def _tool_choice(body: dict[str, Any]) -> Any:
     )
 
 
-def build_message_request(body: dict[str, Any]) -> MessageRequest:
+def build_message_request(
+    body: dict[str, Any],
+    *,
+    previous_messages: list[Message] | None = None,
+) -> MessageRequest:
     options = extract_web_search_options(body)
     max_tokens = _max_tokens(body)
 
@@ -527,7 +560,7 @@ def build_message_request(body: dict[str, Any]) -> MessageRequest:
     try:
         return MessageRequest(
             model=str(body.get("model") or ""),
-            messages=_convert_input_to_messages(body.get("input")),
+            messages=_messages_with_previous_context(body, previous_messages),
             max_tokens=max_tokens,
             system=body.get("instructions"),
             temperature=body.get("temperature"),

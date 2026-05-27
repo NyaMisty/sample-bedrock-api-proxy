@@ -3,7 +3,7 @@
 If you ever set ``base_url`` on the AsyncClient and pass a leading-slash path,
 httpx will silently drop the ``/v1`` from the base. This test family asserts
 that ``upstream_url`` always produces a fully-qualified URL with both the
-configured ``OPENAI_BASE_URL`` path AND the request path joined intact.
+configured Mantle endpoint path AND the request path joined intact.
 """
 from app.api.openai_passthrough.client import upstream_url
 

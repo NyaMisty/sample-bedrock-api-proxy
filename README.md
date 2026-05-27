@@ -91,7 +91,7 @@ This lightweight API convertion service enables you to use various large languag
   - Supports both streaming and non-streaming responses
 - **OpenAI-Compatible API (Bedrock Mantle)**: Non-Claude models can optionally use Bedrock's OpenAI Chat Completions API via bedrock-mantle endpoint instead of Converse API
   - Controlled by `ENABLE_OPENAI_COMPAT` environment variable (disabled by default)
-  - Requires `OPENAI_API_KEY` (Bedrock API Key) and `OPENAI_BASE_URL` (e.g., `https://bedrock-mantle.us-east-1.api.aws/v1`)
+  - Requires `BEDROCK_API_KEY` (Bedrock API Key) and `MANTLE_ENDPOINT_URL` (e.g., `https://bedrock-mantle.us-east-1.api.aws/v1`)
   - Automatically maps Anthropic `thinking` to OpenAI `reasoning` (`budget_tokens` → `effort: high/medium/low`)
   - Supports streaming and non-streaming responses, tool calling, multimodal content
   - Claude models remain unaffected, still using InvokeModel API
@@ -102,6 +102,7 @@ This lightweight API convertion service enables you to use various large languag
 - **Responses API Web Search Compatibility**: `POST /openai/v1/responses` can execute `tools: [{"type": "web_search"}]` proxy-side using the existing Tavily/Brave web search providers
   - Applies only to Responses API; Chat Completions remains passthrough
   - Supports streaming and non-streaming Responses output shapes with `web_search_call`, message output, `output_text`, and usage mapping
+  - Supports stateful `previous_response_id` chaining for proxy-managed web search by storing compressed, sharded context in DynamoDB with TTL
   - Live search is supported; `external_web_access: false` and `return_token_budget` are rejected by the proxy-managed path
 
 ### Infrastructure
@@ -1102,15 +1103,21 @@ ENABLE_OPENAI_COMPAT=True
 ENABLE_OPENAI_PASSTHROUGH=True
 
 # Bedrock Mantle API Key
-OPENAI_API_KEY=your-bedrock-api-key
+BEDROCK_API_KEY=your-bedrock-api-key
 
 # Bedrock Mantle endpoint URL
-OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
+MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-east-1.api.aws/v1
+
+# Deprecated fallback names still work for direct app/CDK usage:
+# OPENAI_API_KEY=your-bedrock-api-key
+# OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
 
 # thinking → reasoning mapping thresholds
 OPENAI_COMPAT_THINKING_HIGH_THRESHOLD=10000    # budget_tokens >= this → effort=high
 OPENAI_COMPAT_THINKING_MEDIUM_THRESHOLD=4000   # budget_tokens >= this → effort=medium
 ```
+
+`cdk/scripts/deploy.sh` requires `BEDROCK_API_KEY` when `ENABLE_OPENAI_COMPAT=true`; the deprecated `OPENAI_API_KEY` name is not accepted by that deploy-time guard.
 
 When `ENABLE_OPENAI_PASSTHROUGH=True`, OpenAI SDK clients can use the proxy root plus `/openai/v1` as their `base_url`:
 
@@ -1128,6 +1135,20 @@ response = client.responses.create(
     input="Search the web for one current positive technology news story.",
 )
 print(response.output_text)
+```
+
+For proxy-managed Responses API web search, `previous_response_id` is stored in
+DynamoDB so ECS deployments with multiple tasks can continue stateful
+conversations across task boundaries. The stored context is gzip-compressed,
+split into DynamoDB items, scoped to the caller's API key, and expired by TTL.
+
+```bash
+# Optional Responses web_search state settings
+DYNAMODB_RESPONSE_CONTEXT_TABLE=anthropic-proxy-response-context
+RESPONSE_CONTEXT_TTL_SECONDS=3600
+RESPONSE_CONTEXT_CHUNK_SIZE_BYTES=262144
+RESPONSE_CONTEXT_MAX_BYTES=1048576
+RESPONSE_CONTEXT_MAX_CHUNKS=8
 ```
 
 #### Web Search Configuration

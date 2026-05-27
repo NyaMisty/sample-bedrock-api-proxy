@@ -13,6 +13,11 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.api.openai_passthrough.client import get_client, upstream_headers, upstream_url
+from app.api.openai_passthrough.context_store import (
+    ResponseContextNotFound,
+    ResponseContextTooLarge,
+    get_response_context_store,
+)
 from app.api.openai_passthrough.model_mapping import resolve_model_id
 from app.api.openai_passthrough.streaming import (
     UpstreamConnectionError,
@@ -40,16 +45,18 @@ router = APIRouter()
 _ddb: DynamoDBClient | None = None
 _mapping: ModelMappingManager | None = None
 _usage: UsageTracker | None = None
+_context_store: Any | None = None
 
 
-def _managers() -> tuple[ModelMappingManager, UsageTracker]:
+def _managers() -> tuple[ModelMappingManager, UsageTracker, Any]:
     """Lazily build DDB managers — keeps import-time side effects out of tests."""
-    global _ddb, _mapping, _usage
-    if _ddb is None or _mapping is None or _usage is None:
+    global _ddb, _mapping, _usage, _context_store
+    if _ddb is None or _mapping is None or _usage is None or _context_store is None:
         _ddb = DynamoDBClient()
         _mapping = ModelMappingManager(_ddb)
         _usage = UsageTracker(_ddb)
-    return _mapping, _usage
+        _context_store = get_response_context_store(_ddb)
+    return _mapping, _usage, _context_store
 
 
 def _record_usage(
@@ -58,7 +65,7 @@ def _record_usage(
     model: str,
     api_surface: str,
 ) -> None:
-    _, usage = _managers()
+    _, usage, _ = _managers()
     norm = normalize_usage(raw_usage, api_surface)
     try:
         usage.record_usage(
@@ -98,7 +105,7 @@ async def chat_completions(
     api_key_info: dict[str, Any] = Depends(get_api_key_info),
 ):
     body = await request.json()
-    mapping, _ = _managers()
+    mapping, _, _ = _managers()
     body["model"] = resolve_model_id(body.get("model", ""), mapping)
     extra = _passthrough_extra_headers(request)
 
@@ -144,16 +151,52 @@ async def responses_create(
     api_key_info: dict[str, Any] = Depends(get_api_key_info),
 ):
     body = await request.json()
-    mapping, _ = _managers()
+    mapping, _, context_store = _managers()
     body["model"] = resolve_model_id(body.get("model", ""), mapping)
     extra = _passthrough_extra_headers(request)
 
     if is_responses_web_search_request(body):
         request_id = f"resp-{uuid4().hex}"
         service_tier = api_key_info.get("service_tier", "default")
+        api_key = api_key_info.get("api_key", "")
+        previous_messages = None
+        previous_response_id = body.get("previous_response_id")
+        if previous_response_id is not None:
+            if not isinstance(previous_response_id, str):
+                return JSONResponse(
+                    {
+                        "error": {
+                            "message": "previous_response_id must be a string",
+                            "type": "invalid_request_error",
+                        }
+                    },
+                    status_code=400,
+                )
+            try:
+                previous_messages = context_store.load(
+                    previous_response_id,
+                    api_key=api_key,
+                )
+            except ResponseContextNotFound:
+                return JSONResponse(
+                    {
+                        "error": {
+                            "message": (
+                                f"previous_response_id {previous_response_id!r} "
+                                "was not found"
+                            ),
+                            "type": "invalid_request_error",
+                        }
+                    },
+                    status_code=404,
+                )
+
         try:
             ensure_web_search_enabled()
-            message_request = build_message_request(body)
+            message_request = build_message_request(
+                body,
+                previous_messages=previous_messages,
+            )
         except OpenAIResponsesWebSearchError as exc:
             return JSONResponse(exc.to_error_body(), status_code=exc.status_code)
 
@@ -180,6 +223,20 @@ async def responses_create(
                 original_model=body.get("model", ""),
                 response_id=request_id,
             )
+            try:
+                context_store.save(
+                    response_id=data["id"],
+                    api_key=api_key,
+                    request=message_request,
+                    response_data=data,
+                )
+            except ResponseContextTooLarge as exc:
+                logger.warning("[OPENAI-PASSTHROUGH] context not stored: %s", exc)
+            except Exception as exc:
+                logger.warning(
+                    "[OPENAI-PASSTHROUGH] context storage failed: %s",
+                    exc,
+                )
             if isinstance(data.get("usage"), dict):
                 _record_usage(api_key_info, data["usage"], body["model"], "responses")
 
@@ -196,6 +253,7 @@ async def responses_create(
         try:
             data = await handle_non_streaming_web_search(
                 body,
+                message_request=message_request,
                 web_search_service=web_search_service,
                 bedrock_service=bedrock_service,
                 request_id=request_id,
@@ -205,6 +263,17 @@ async def responses_create(
             return JSONResponse(exc.to_error_body(), status_code=exc.status_code)
         except Exception as exc:
             return _api_error_response(exc)
+        try:
+            context_store.save(
+                response_id=data["id"],
+                api_key=api_key,
+                request=message_request,
+                response_data=data,
+            )
+        except ResponseContextTooLarge as exc:
+            logger.warning("[OPENAI-PASSTHROUGH] context not stored: %s", exc)
+        except Exception as exc:
+            logger.warning("[OPENAI-PASSTHROUGH] context storage failed: %s", exc)
         if isinstance(data.get("usage"), dict):
             _record_usage(api_key_info, data["usage"], body["model"], "responses")
         return JSONResponse(data, status_code=200)

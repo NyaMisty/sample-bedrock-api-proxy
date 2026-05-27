@@ -89,7 +89,7 @@
   - 支持流式和非流式响应
 - **OpenAI 兼容 API（Bedrock Mantle）**：非 Claude 模型可选择通过 Bedrock 的 OpenAI Chat Completions API（bedrock-mantle 端点）进行请求，替代 Converse API
   - 通过 `ENABLE_OPENAI_COMPAT` 环境变量控制，默认关闭
-  - 需要配置 `OPENAI_API_KEY`（Bedrock API Key）和 `OPENAI_BASE_URL`（如 `https://bedrock-mantle.us-east-1.api.aws/v1`）
+  - 需要配置 `BEDROCK_API_KEY`（Bedrock API Key）和 `MANTLE_ENDPOINT_URL`（如 `https://bedrock-mantle.us-east-1.api.aws/v1`）
   - 自动将 Anthropic `thinking` 配置映射为 OpenAI `reasoning`（`budget_tokens` → `effort: high/medium/low`）
   - 支持流式和非流式响应、工具调用、多模态内容
   - Claude 模型不受影响，仍使用 InvokeModel API
@@ -100,6 +100,7 @@
 - **Responses API Web Search 兼容**：`POST /openai/v1/responses` 可以通过现有 Tavily/Brave 搜索提供商在代理侧执行 `tools: [{"type": "web_search"}]`
   - 该能力仅适用于 Responses API；Chat Completions 继续保持透传
   - 支持流式和非流式 Responses 输出结构，包括 `web_search_call`、message output、`output_text` 和 usage 映射
+  - 支持代理侧 web search 的 `previous_response_id` 有状态串联，上下文会压缩、分片后存入 DynamoDB，并带 TTL
   - 当前支持实时搜索；`external_web_access: false` 和 `return_token_budget` 会被代理侧路径拒绝
 
 ### 基础设施
@@ -1038,15 +1039,21 @@ ENABLE_OPENAI_COMPAT=True
 ENABLE_OPENAI_PASSTHROUGH=True
 
 # Bedrock Mantle API Key
-OPENAI_API_KEY=your-bedrock-api-key
+BEDROCK_API_KEY=your-bedrock-api-key
 
 # Bedrock Mantle 端点 URL
-OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
+MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-east-1.api.aws/v1
+
+# 旧变量名仍作为 direct app/CDK 用法的兼容 fallback：
+# OPENAI_API_KEY=your-bedrock-api-key
+# OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
 
 # thinking → reasoning 映射阈值
 OPENAI_COMPAT_THINKING_HIGH_THRESHOLD=10000    # budget_tokens >= 此值 → effort=high
 OPENAI_COMPAT_THINKING_MEDIUM_THRESHOLD=4000   # budget_tokens >= 此值 → effort=medium
 ```
+
+当 `ENABLE_OPENAI_COMPAT=true` 时，`cdk/scripts/deploy.sh` 会要求必须传入 `BEDROCK_API_KEY`；该部署时校验不接受旧变量名 `OPENAI_API_KEY`。
 
 当 `ENABLE_OPENAI_PASSTHROUGH=True` 时，OpenAI SDK 客户端可以将代理地址加 `/openai/v1` 作为 `base_url`：
 
@@ -1064,6 +1071,19 @@ response = client.responses.create(
     input="Search the web for one current positive technology news story.",
 )
 print(response.output_text)
+```
+
+对于代理侧执行的 Responses API web search，`previous_response_id` 会存入
+DynamoDB，因此 ECS 多 task 部署也能跨 task 继续有状态会话。存储内容会
+gzip 压缩、按 DynamoDB item 分片、绑定调用方 API key，并通过 TTL 过期。
+
+```bash
+# 可选 Responses web_search 状态配置
+DYNAMODB_RESPONSE_CONTEXT_TABLE=anthropic-proxy-response-context
+RESPONSE_CONTEXT_TTL_SECONDS=3600
+RESPONSE_CONTEXT_CHUNK_SIZE_BYTES=262144
+RESPONSE_CONTEXT_MAX_BYTES=1048576
+RESPONSE_CONTEXT_MAX_CHUNKS=8
 ```
 
 #### Web 搜索配置

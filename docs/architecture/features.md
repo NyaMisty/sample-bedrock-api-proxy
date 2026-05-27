@@ -436,8 +436,8 @@ Adds new `/openai/v1/*` endpoints that accept OpenAI-native API formats and forw
 
 ```bash
 ENABLE_OPENAI_PASSTHROUGH=True
-OPENAI_API_KEY=<your-bedrock-api-key>
-OPENAI_BASE_URL=https://bedrock-mantle.us-east-1.api.aws/v1
+BEDROCK_API_KEY=<your-bedrock-api-key>
+MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-east-1.api.aws/v1
 ```
 
 ### Endpoints
@@ -469,7 +469,7 @@ resp = client.chat.completions.create(
 
 ### Auth
 
-Either `Authorization: Bearer <proxy-key>` (OpenAI SDK default) or `x-api-key: <proxy-key>` works. The proxy uses its configured `OPENAI_API_KEY` (Bedrock API key) for the upstream call.
+Either `Authorization: Bearer <proxy-key>` (OpenAI SDK default) or `x-api-key: <proxy-key>` works. The proxy uses its configured `BEDROCK_API_KEY` (Bedrock API key) for the upstream call.
 
 ### Model mapping
 

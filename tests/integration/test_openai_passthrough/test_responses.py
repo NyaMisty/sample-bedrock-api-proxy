@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from app.schemas.anthropic import MessageResponse, Usage
+from app.schemas.anthropic import Message, MessageResponse, Usage
 
 
 @pytest.fixture
@@ -214,6 +214,7 @@ def test_non_streaming_responses_web_search_uses_local_adapter_not_upstream(
     respx_mock,
     mock_usage_tracker,
     mock_web_search_service,
+    mock_response_context_store,
 ):
     mock_web_search_service.handle_request.return_value = MessageResponse(
         id="msg-local",
@@ -250,10 +251,62 @@ def test_non_streaming_responses_web_search_uses_local_adapter_not_upstream(
     assert data["usage"] == {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
     assert not route.called
     assert mock_web_search_service.handle_request.called
+    assert mock_response_context_store.save.called
     kw = mock_usage_tracker.record_usage.call_args.kwargs
     assert kw["api_surface"] == "responses"
     assert kw["input_tokens"] == 3
     assert kw["output_tokens"] == 2
+
+
+def test_responses_web_search_previous_response_id_uses_shared_context_store(
+    client,
+    respx_mock,
+    mock_web_search_service,
+    mock_response_context_store,
+):
+    mock_response_context_store.load.return_value = [
+        Message(role="user", content="Remember marker alpha-173."),
+        Message(role="assistant", content="Marker alpha-173 was recorded."),
+    ]
+    mock_web_search_service.handle_request.return_value = MessageResponse(
+        id="msg-local",
+        type="message",
+        role="assistant",
+        model="m",
+        stop_reason="end_turn",
+        content=[{"type": "text", "text": "answer"}],
+        usage=Usage(input_tokens=3, output_tokens=2),
+    )
+    route = respx_mock.post("/responses").mock(
+        return_value=httpx.Response(500, json={"error": {"message": "should not call"}})
+    )
+
+    r = client.post(
+        "/openai/v1/responses",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "m",
+            "previous_response_id": "resp_prev",
+            "input": "What marker did I ask you to remember?",
+            "tools": [{"type": "web_search"}],
+        },
+    )
+
+    assert r.status_code == 200
+    assert not route.called
+    mock_response_context_store.load.assert_called_once_with(
+        "resp_prev",
+        api_key="sk-test",
+    )
+    request = mock_web_search_service.handle_request.call_args.kwargs["request"]
+    assert [message.role for message in request.messages] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert "alpha-173" in str(request.messages[0].content)
+    assert "What marker" in str(request.messages[-1].content)
+    assert mock_response_context_store.save.called
 
 
 def test_streaming_responses_web_search_emits_local_responses_sse(

@@ -61,6 +61,16 @@ def mock_usage_tracker():
 
 
 @pytest.fixture
+def mock_response_context_store():
+    store = MagicMock()
+    with patch(
+        "app.api.openai_passthrough.router.get_response_context_store",
+        return_value=store,
+    ):
+        yield store
+
+
+@pytest.fixture
 def mock_web_search_service():
     service = MagicMock()
     service.handle_request = AsyncMock()
@@ -102,6 +112,7 @@ def client(
     mock_api_key_manager,
     mock_model_mapping_manager,
     mock_usage_tracker,
+    mock_response_context_store,
     mock_web_search_service,
     mock_bedrock_service,
 ):
@@ -132,6 +143,7 @@ def client(
     _router_module._ddb = None
     _router_module._mapping = None
     _router_module._usage = None
+    _router_module._context_store = None
 
     with patch(
         "app.api.openai_passthrough.router.DynamoDBClient", return_value=MagicMock()
@@ -146,5 +158,6 @@ def client(
         _router_module._ddb = None
         _router_module._mapping = None
         _router_module._usage = None
+        _router_module._context_store = None
 
         yield TestClient(_main_mod.app)

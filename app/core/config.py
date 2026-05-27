@@ -6,7 +6,7 @@ Loads configuration from environment variables with validation and type safety.
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -86,10 +86,34 @@ class Settings(BaseSettings):
     dynamodb_beta_headers_table: str = Field(
         default="anthropic-proxy-beta-headers", alias="DYNAMODB_BETA_HEADERS_TABLE"
     )
+    dynamodb_response_context_table: str = Field(
+        default="anthropic-proxy-response-context",
+        alias="DYNAMODB_RESPONSE_CONTEXT_TABLE",
+    )
     usage_ttl_days: int = Field(
         default=7,
         alias="USAGE_TTL_DAYS",
         description="TTL in days for usage records in DynamoDB (0 to disable TTL)"
+    )
+    response_context_ttl_seconds: int = Field(
+        default=3600,
+        alias="RESPONSE_CONTEXT_TTL_SECONDS",
+        description="TTL in seconds for OpenAI Responses previous_response_id context",
+    )
+    response_context_chunk_size_bytes: int = Field(
+        default=262144,
+        alias="RESPONSE_CONTEXT_CHUNK_SIZE_BYTES",
+        description="Maximum encoded bytes stored in each response context chunk",
+    )
+    response_context_max_bytes: int = Field(
+        default=1048576,
+        alias="RESPONSE_CONTEXT_MAX_BYTES",
+        description="Maximum encoded bytes stored per response context",
+    )
+    response_context_max_chunks: int = Field(
+        default=8,
+        alias="RESPONSE_CONTEXT_MAX_CHUNKS",
+        description="Maximum DynamoDB chunks per response context",
     )
 
     # Authentication Settings
@@ -386,13 +410,20 @@ class Settings(BaseSettings):
     )
     openai_api_key: str = Field(
         default="",
-        alias="OPENAI_API_KEY",
-        description="Bedrock API key for bedrock-mantle endpoint"
+        validation_alias=AliasChoices("BEDROCK_API_KEY", "OPENAI_API_KEY"),
+        description=(
+            "Bedrock API key for Bedrock Mantle endpoint. "
+            "OPENAI_API_KEY is accepted as a deprecated fallback."
+        )
     )
     openai_base_url: str = Field(
         default="",
-        alias="OPENAI_BASE_URL",
-        description="Bedrock Mantle endpoint URL (e.g. https://bedrock-mantle.us-east-1.api.aws/v1)"
+        validation_alias=AliasChoices("MANTLE_ENDPOINT_URL", "OPENAI_BASE_URL"),
+        description=(
+            "Bedrock Mantle endpoint URL "
+            "(e.g. https://bedrock-mantle.us-east-1.api.aws/v1). "
+            "OPENAI_BASE_URL is accepted as a deprecated fallback."
+        )
     )
     openai_compat_thinking_high_threshold: int = Field(
         default=10000,

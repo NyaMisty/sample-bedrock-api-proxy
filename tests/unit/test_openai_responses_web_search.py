@@ -13,7 +13,7 @@ from app.api.openai_passthrough.web_search import (
     is_responses_web_search_request,
     stream_response_events,
 )
-from app.schemas.anthropic import MessageRequest, MessageResponse, Usage
+from app.schemas.anthropic import Message, MessageRequest, MessageResponse, Usage
 
 
 def _message_text(req: MessageRequest, index: int) -> str:
@@ -191,6 +191,54 @@ def test_build_message_request_converts_responses_input_array_and_filters():
             "allowed_domains": ["example.com"],
         }
     ]
+
+
+def test_build_message_request_prepends_previous_response_context():
+    first_req = build_message_request(
+        {
+            "model": "m",
+            "input": "Search for a current positive technology story.",
+            "tools": [{"type": "web_search"}],
+        }
+    )
+    previous_messages = [
+        *first_req.messages,
+        Message(role="assistant", content="The previous story was about Example Robotics."),
+    ]
+
+    follow_up = build_message_request(
+        {
+            "model": "m",
+            "previous_response_id": "resp_stateful_1",
+            "input": "Using the previous response, search for one update about that organization.",
+            "tools": [{"type": "web_search"}],
+        },
+        previous_messages=previous_messages,
+    )
+
+    assert [message.role for message in follow_up.messages] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert _message_text(follow_up, 0) == "Search for a current positive technology story."
+    assert _message_text(follow_up, 1) == "The previous story was about Example Robotics."
+    assert _message_text(follow_up, 2).startswith("Using the previous response")
+
+
+def test_build_message_request_rejects_unknown_previous_response_id():
+    with pytest.raises(OpenAIResponsesWebSearchError) as exc:
+        build_message_request(
+            {
+                "model": "m",
+                "previous_response_id": "resp_missing",
+                "input": "Use previous context.",
+                "tools": [{"type": "web_search"}],
+            }
+        )
+
+    assert exc.value.status_code == 404
+    assert "previous_response_id" in exc.value.message
 
 
 def test_build_message_request_rejects_missing_input():

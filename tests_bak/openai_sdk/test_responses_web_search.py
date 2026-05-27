@@ -7,6 +7,7 @@ Usage:
     python test_responses_web_search.py
     python test_responses_web_search.py --non-stream
     python test_responses_web_search.py --stream
+    python test_responses_web_search.py --stateful
     python test_responses_web_search.py --model openai.gpt-oss-120b
 
 Configuration:
@@ -44,6 +45,7 @@ DEFAULT_QUERY = (
     "Search the web for one current positive technology news story from today. "
     "Answer in two concise bullet points and mention the source title if available."
 )
+STATEFUL_MARKER = "cobalt-river-7319"
 
 
 def _load_env() -> None:
@@ -93,7 +95,11 @@ def _output_text(response: Any, response_data: dict[str, Any]) -> str:
     return ""
 
 
-def _assert_non_streaming_response(response: Any) -> dict[str, Any]:
+def _assert_non_streaming_response(
+    response: Any,
+    *,
+    require_web_search_call: bool = True,
+) -> dict[str, Any]:
     data = _response_to_dict(response)
     items = _output_items(data)
     item_types = [item.get("type") for item in items]
@@ -103,7 +109,7 @@ def _assert_non_streaming_response(response: Any) -> dict[str, Any]:
         raise AssertionError(f"expected object=response, got {data.get('object')!r}")
     if data.get("status") != "completed":
         raise AssertionError(f"expected status=completed, got {data.get('status')!r}")
-    if "web_search_call" not in item_types:
+    if require_web_search_call and "web_search_call" not in item_types:
         raise AssertionError(f"expected a web_search_call output item, got {item_types!r}")
     if "message" not in item_types:
         raise AssertionError(f"expected a message output item, got {item_types!r}")
@@ -128,6 +134,57 @@ def run_non_streaming(client: OpenAI, model: str, query: str) -> None:
     )
     summary = _assert_non_streaming_response(response)
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
+
+
+def run_stateful(client: OpenAI, model: str) -> None:
+    print("\n=== Responses web_search: stateful previous_response_id ===")
+    first_response = client.responses.create(
+        model=model,
+        tools=[{"type": "web_search"}],
+        input=(
+            "Search the web for one current positive technology news story. "
+            f"Remember this marker for the next turn: {STATEFUL_MARKER}. "
+            "Do not mention the marker in your answer."
+        ),
+    )
+    first_summary = _assert_non_streaming_response(first_response)
+    previous_response_id = first_summary.get("id")
+    if not isinstance(previous_response_id, str) or not previous_response_id:
+        raise AssertionError(f"expected first response id, got {previous_response_id!r}")
+
+    follow_up = client.responses.create(
+        model=model,
+        previous_response_id=previous_response_id,
+        tools=[{"type": "web_search"}],
+        input=(
+            "Using the previous conversation state, what marker did I ask you "
+            "to remember? Answer with only the marker."
+        ),
+    )
+    follow_up_summary = _assert_non_streaming_response(
+        follow_up,
+        require_web_search_call=False,
+    )
+    output_text = str(follow_up_summary["output_text"]).lower()
+    if STATEFUL_MARKER not in output_text:
+        raise AssertionError(
+            "expected stateful follow-up to include "
+            f"{STATEFUL_MARKER!r}, got {follow_up_summary['output_text']!r}"
+        )
+
+    print(
+        json.dumps(
+            {
+                "previous_response_id": previous_response_id,
+                "first_output_types": first_summary["output_types"],
+                "follow_up_output_types": follow_up_summary["output_types"],
+                "follow_up_output_text": follow_up_summary["output_text"],
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+    )
 
 
 def _event_to_dict(event: Any) -> dict[str, Any]:
@@ -209,6 +266,7 @@ def parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--non-stream", action="store_true", help="Run only non-streaming test")
     mode.add_argument("--stream", action="store_true", help="Run only streaming test")
+    mode.add_argument("--stateful", action="store_true", help="Run only previous_response_id test")
     parser.add_argument("--model", default=os.getenv("OPENAI_TEST_MODEL", DEFAULT_MODEL))
     parser.add_argument("--query", default=os.getenv("OPENAI_WEB_SEARCH_QUERY", DEFAULT_QUERY))
     parser.add_argument(
@@ -245,9 +303,12 @@ def main() -> int:
             run_streaming(client, args.model, args.query)
         elif args.non_stream:
             run_non_streaming(client, args.model, args.query)
+        elif args.stateful:
+            run_stateful(client, args.model)
         else:
             run_non_streaming(client, args.model, args.query)
             run_streaming(client, args.model, args.query)
+            run_stateful(client, args.model)
     except Exception as exc:
         print(f"\nFAILED: {exc}", file=sys.stderr)
         return 1
