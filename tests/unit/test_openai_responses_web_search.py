@@ -9,13 +9,11 @@ from app.api.openai_passthrough.web_search import (
     OpenAIResponsesWebSearchError,
     build_message_request,
     build_response_json,
-    clear_response_context_store,
     extract_web_search_options,
     is_responses_web_search_request,
-    remember_response_context,
     stream_response_events,
 )
-from app.schemas.anthropic import MessageRequest, MessageResponse, Usage
+from app.schemas.anthropic import Message, MessageRequest, MessageResponse, Usage
 
 
 def _message_text(req: MessageRequest, index: int) -> str:
@@ -196,7 +194,6 @@ def test_build_message_request_converts_responses_input_array_and_filters():
 
 
 def test_build_message_request_prepends_previous_response_context():
-    clear_response_context_store()
     first_req = build_message_request(
         {
             "model": "m",
@@ -204,11 +201,10 @@ def test_build_message_request_prepends_previous_response_context():
             "tools": [{"type": "web_search"}],
         }
     )
-    remember_response_context(
-        "resp_stateful_1",
-        first_req,
-        {"output_text": "The previous story was about Example Robotics."},
-    )
+    previous_messages = [
+        *first_req.messages,
+        Message(role="assistant", content="The previous story was about Example Robotics."),
+    ]
 
     follow_up = build_message_request(
         {
@@ -216,7 +212,8 @@ def test_build_message_request_prepends_previous_response_context():
             "previous_response_id": "resp_stateful_1",
             "input": "Using the previous response, search for one update about that organization.",
             "tools": [{"type": "web_search"}],
-        }
+        },
+        previous_messages=previous_messages,
     )
 
     assert [message.role for message in follow_up.messages] == [
@@ -227,11 +224,9 @@ def test_build_message_request_prepends_previous_response_context():
     assert _message_text(follow_up, 0) == "Search for a current positive technology story."
     assert _message_text(follow_up, 1) == "The previous story was about Example Robotics."
     assert _message_text(follow_up, 2).startswith("Using the previous response")
-    clear_response_context_store()
 
 
 def test_build_message_request_rejects_unknown_previous_response_id():
-    clear_response_context_store()
     with pytest.raises(OpenAIResponsesWebSearchError) as exc:
         build_message_request(
             {

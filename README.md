@@ -102,6 +102,7 @@ This lightweight API convertion service enables you to use various large languag
 - **Responses API Web Search Compatibility**: `POST /openai/v1/responses` can execute `tools: [{"type": "web_search"}]` proxy-side using the existing Tavily/Brave web search providers
   - Applies only to Responses API; Chat Completions remains passthrough
   - Supports streaming and non-streaming Responses output shapes with `web_search_call`, message output, `output_text`, and usage mapping
+  - Supports stateful `previous_response_id` chaining for proxy-managed web search by storing compressed, sharded context in DynamoDB with TTL
   - Live search is supported; `external_web_access: false` and `return_token_budget` are rejected by the proxy-managed path
 
 ### Infrastructure
@@ -1134,6 +1135,20 @@ response = client.responses.create(
     input="Search the web for one current positive technology news story.",
 )
 print(response.output_text)
+```
+
+For proxy-managed Responses API web search, `previous_response_id` is stored in
+DynamoDB so ECS deployments with multiple tasks can continue stateful
+conversations across task boundaries. The stored context is gzip-compressed,
+split into DynamoDB items, scoped to the caller's API key, and expired by TTL.
+
+```bash
+# Optional Responses web_search state settings
+DYNAMODB_RESPONSE_CONTEXT_TABLE=anthropic-proxy-response-context
+RESPONSE_CONTEXT_TTL_SECONDS=3600
+RESPONSE_CONTEXT_CHUNK_SIZE_BYTES=262144
+RESPONSE_CONTEXT_MAX_BYTES=1048576
+RESPONSE_CONTEXT_MAX_CHUNKS=8
 ```
 
 #### Web Search Configuration

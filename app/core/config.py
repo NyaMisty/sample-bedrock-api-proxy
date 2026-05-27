@@ -86,10 +86,34 @@ class Settings(BaseSettings):
     dynamodb_beta_headers_table: str = Field(
         default="anthropic-proxy-beta-headers", alias="DYNAMODB_BETA_HEADERS_TABLE"
     )
+    dynamodb_response_context_table: str = Field(
+        default="anthropic-proxy-response-context",
+        alias="DYNAMODB_RESPONSE_CONTEXT_TABLE",
+    )
     usage_ttl_days: int = Field(
         default=7,
         alias="USAGE_TTL_DAYS",
         description="TTL in days for usage records in DynamoDB (0 to disable TTL)"
+    )
+    response_context_ttl_seconds: int = Field(
+        default=3600,
+        alias="RESPONSE_CONTEXT_TTL_SECONDS",
+        description="TTL in seconds for OpenAI Responses previous_response_id context",
+    )
+    response_context_chunk_size_bytes: int = Field(
+        default=262144,
+        alias="RESPONSE_CONTEXT_CHUNK_SIZE_BYTES",
+        description="Maximum encoded bytes stored in each response context chunk",
+    )
+    response_context_max_bytes: int = Field(
+        default=1048576,
+        alias="RESPONSE_CONTEXT_MAX_BYTES",
+        description="Maximum encoded bytes stored per response context",
+    )
+    response_context_max_chunks: int = Field(
+        default=8,
+        alias="RESPONSE_CONTEXT_MAX_CHUNKS",
+        description="Maximum DynamoDB chunks per response context",
     )
 
     # Authentication Settings

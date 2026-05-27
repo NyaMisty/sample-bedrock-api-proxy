@@ -100,6 +100,7 @@
 - **Responses API Web Search 兼容**：`POST /openai/v1/responses` 可以通过现有 Tavily/Brave 搜索提供商在代理侧执行 `tools: [{"type": "web_search"}]`
   - 该能力仅适用于 Responses API；Chat Completions 继续保持透传
   - 支持流式和非流式 Responses 输出结构，包括 `web_search_call`、message output、`output_text` 和 usage 映射
+  - 支持代理侧 web search 的 `previous_response_id` 有状态串联，上下文会压缩、分片后存入 DynamoDB，并带 TTL
   - 当前支持实时搜索；`external_web_access: false` 和 `return_token_budget` 会被代理侧路径拒绝
 
 ### 基础设施
@@ -1070,6 +1071,19 @@ response = client.responses.create(
     input="Search the web for one current positive technology news story.",
 )
 print(response.output_text)
+```
+
+对于代理侧执行的 Responses API web search，`previous_response_id` 会存入
+DynamoDB，因此 ECS 多 task 部署也能跨 task 继续有状态会话。存储内容会
+gzip 压缩、按 DynamoDB item 分片、绑定调用方 API key，并通过 TTL 过期。
+
+```bash
+# 可选 Responses web_search 状态配置
+DYNAMODB_RESPONSE_CONTEXT_TABLE=anthropic-proxy-response-context
+RESPONSE_CONTEXT_TTL_SECONDS=3600
+RESPONSE_CONTEXT_CHUNK_SIZE_BYTES=262144
+RESPONSE_CONTEXT_MAX_BYTES=1048576
+RESPONSE_CONTEXT_MAX_CHUNKS=8
 ```
 
 #### Web 搜索配置

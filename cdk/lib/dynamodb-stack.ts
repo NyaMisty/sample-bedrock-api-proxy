@@ -251,6 +251,7 @@ export class DynamoDBStack extends cdk.Stack {
   public readonly smartRoutingConfigTable: dynamodb.Table;
   public readonly providersTable: dynamodb.Table;
   public readonly betaHeadersTable: dynamodb.Table;
+  public readonly responseContextTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DynamoDBStackProps) {
     super(scope, id, props);
@@ -486,6 +487,30 @@ export class DynamoDBStack extends cdk.Stack {
       encryption: dynamodb.TableEncryption.AWS_MANAGED,
     });
 
+    // OpenAI Responses Context Table (sharded previous_response_id state)
+    this.responseContextTable = new dynamodb.Table(this, 'ResponseContextTable', {
+      partitionKey: {
+        name: 'response_id',
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: 'chunk_id',
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode:
+        config.dynamodbBillingMode === 'PAY_PER_REQUEST'
+          ? dynamodb.BillingMode.PAY_PER_REQUEST
+          : dynamodb.BillingMode.PROVISIONED,
+      readCapacity: config.dynamodbReadCapacity,
+      writeCapacity: config.dynamodbWriteCapacity,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: config.environmentName === 'prod',
+      },
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      timeToLiveAttribute: 'expires_at',
+    });
+
     // Apply tags to all tables
     Object.entries(config.tags).forEach(([key, value]) => {
       cdk.Tags.of(this.apiKeysTable).add(key, value);
@@ -499,6 +524,7 @@ export class DynamoDBStack extends cdk.Stack {
       cdk.Tags.of(this.smartRoutingConfigTable).add(key, value);
       cdk.Tags.of(this.providersTable).add(key, value);
       cdk.Tags.of(this.betaHeadersTable).add(key, value);
+      cdk.Tags.of(this.responseContextTable).add(key, value);
     });
 
     // Outputs - exportName omitted to avoid cross-stack conflicts
@@ -555,6 +581,11 @@ export class DynamoDBStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'BetaHeadersTableName', {
       value: this.betaHeadersTable.tableName,
       description: 'Beta Headers DynamoDB Table Name',
+    });
+
+    new cdk.CfnOutput(this, 'ResponseContextTableName', {
+      value: this.responseContextTable.tableName,
+      description: 'OpenAI Responses Context DynamoDB Table Name',
     });
   }
 

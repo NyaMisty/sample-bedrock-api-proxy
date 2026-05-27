@@ -30,6 +30,7 @@ export interface ECSStackProps extends cdk.StackProps {
   smartRoutingConfigTable: dynamodb.Table;
   providersTable: dynamodb.Table;
   betaHeadersTable: dynamodb.Table;
+  responseContextTable: dynamodb.Table;
   // Cognito (optional - for admin portal)
   cognitoUserPoolId?: string;
   cognitoClientId?: string;
@@ -49,7 +50,7 @@ export class ECSStack extends cdk.Stack {
 
     const { config, vpc, albSecurityGroup, ecsSecurityGroup } = props;
     const { apiKeysTable, usageTable, modelMappingTable, usageStatsTable, modelPricingTable } = props;
-    const { providerKeysTable, routingRulesTable, failoverChainsTable, smartRoutingConfigTable, providersTable, betaHeadersTable } = props;
+    const { providerKeysTable, routingRulesTable, failoverChainsTable, smartRoutingConfigTable, providersTable, betaHeadersTable, responseContextTable } = props;
     const { cognitoUserPoolId, cognitoClientId } = props;
 
     // Create ECS Cluster
@@ -143,6 +144,7 @@ export class ECSStack extends cdk.Stack {
     smartRoutingConfigTable.grantReadWriteData(taskRole);
     providersTable.grantReadWriteData(taskRole);
     betaHeadersTable.grantReadWriteData(taskRole);
+    responseContextTable.grantReadWriteData(taskRole);
 
     // Grant Bedrock permissions
     taskRole.addToPolicy(
@@ -228,6 +230,7 @@ export class ECSStack extends cdk.Stack {
       DYNAMODB_SMART_ROUTING_CONFIG_TABLE: smartRoutingConfigTable.tableName,
       DYNAMODB_PROVIDERS_TABLE: providersTable.tableName,
       DYNAMODB_BETA_HEADERS_TABLE: betaHeadersTable.tableName,
+      DYNAMODB_RESPONSE_CONTEXT_TABLE: responseContextTable.tableName,
 
       // Authentication
       API_KEY_HEADER: 'x-api-key',
@@ -331,6 +334,7 @@ export class ECSStack extends cdk.Stack {
           smartRoutingConfigTable,
           providersTable,
           betaHeadersTable,
+          responseContextTable,
         },
         cognitoUserPoolId,
         cognitoClientId
@@ -876,6 +880,7 @@ export class ECSStack extends cdk.Stack {
       smartRoutingConfigTable: dynamodb.Table;
       providersTable: dynamodb.Table;
       betaHeadersTable: dynamodb.Table;
+      responseContextTable: dynamodb.Table;
     },
     cognitoUserPoolId?: string,
     cognitoClientId?: string
@@ -919,6 +924,7 @@ export class ECSStack extends cdk.Stack {
       DYNAMODB_SMART_ROUTING_CONFIG_TABLE: tables.smartRoutingConfigTable.tableName,
       DYNAMODB_PROVIDERS_TABLE: tables.providersTable.tableName,
       DYNAMODB_BETA_HEADERS_TABLE: tables.betaHeadersTable.tableName,
+      DYNAMODB_RESPONSE_CONTEXT_TABLE: tables.responseContextTable.tableName,
       // Cognito (if configured)
       ...(cognitoUserPoolId && { COGNITO_USER_POOL_ID: cognitoUserPoolId }),
       ...(cognitoClientId && { COGNITO_CLIENT_ID: cognitoClientId }),
@@ -1039,6 +1045,7 @@ export class ECSStack extends cdk.Stack {
     tables.modelPricingTable.grantReadWriteData(taskRole);
     tables.providersTable.grantReadWriteData(taskRole);
     tables.betaHeadersTable.grantReadWriteData(taskRole);
+    tables.responseContextTable.grantReadWriteData(taskRole);
 
     // Output Admin Portal information
     new cdk.CfnOutput(this, 'AdminPortalServiceName', {

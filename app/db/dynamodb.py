@@ -43,6 +43,7 @@ class DynamoDBClient:
         self.smart_routing_config_table_name = settings.dynamodb_smart_routing_config_table
         self.providers_table_name = settings.dynamodb_providers_table
         self.beta_headers_table_name = settings.dynamodb_beta_headers_table
+        self.response_context_table_name = settings.dynamodb_response_context_table
 
     def create_tables(self):
         """Create all required DynamoDB tables if they don't exist."""
@@ -57,6 +58,7 @@ class DynamoDBClient:
         self._create_smart_routing_config_table()
         self._create_providers_table()
         self._create_beta_headers_table()
+        self._create_response_context_table()
 
     def _create_api_keys_table(self):
         """Create API keys table."""
@@ -331,6 +333,29 @@ class DynamoDBClient:
         except ClientError as e:
             if e.response["Error"]["Code"] == "ResourceInUseException":
                 print(f"Table already exists: {self.beta_headers_table_name}")
+            else:
+                raise
+
+    def _create_response_context_table(self):
+        """Create sharded OpenAI Responses context table."""
+        try:
+            table = self.dynamodb.create_table(
+                TableName=self.response_context_table_name,
+                KeySchema=[
+                    {"AttributeName": "response_id", "KeyType": "HASH"},
+                    {"AttributeName": "chunk_id", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "response_id", "AttributeType": "S"},
+                    {"AttributeName": "chunk_id", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            table.wait_until_exists()
+            print(f"Created table: {self.response_context_table_name}")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ResourceInUseException":
+                print(f"Table already exists: {self.response_context_table_name}")
             else:
                 raise
 
