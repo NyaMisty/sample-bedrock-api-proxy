@@ -161,3 +161,43 @@ def test_build_message_request_rejects_missing_input():
 
     assert exc.value.status_code == 400
     assert "input" in exc.value.message
+
+
+def test_build_message_request_maps_web_search_tool_choice_dict():
+    req = build_message_request(
+        {
+            "model": "m",
+            "input": "Find news",
+            "tools": [{"type": "web_search"}],
+            "tool_choice": {"type": "web_search"},
+        }
+    )
+
+    assert req.tool_choice == {"type": "tool", "name": "web_search"}
+
+
+def test_build_message_request_maps_function_tool_choice_dict():
+    req = build_message_request(
+        {
+            "model": "m",
+            "input": "Find news",
+            "tools": [{"type": "web_search"}],
+            "tool_choice": {"function": {"name": "web_search"}},
+        }
+    )
+
+    assert req.tool_choice == {"type": "tool", "name": "web_search"}
+
+
+def test_build_message_request_rejects_zero_max_output_tokens():
+    with pytest.raises(OpenAIResponsesWebSearchError) as exc:
+        build_message_request(
+            {
+                "model": "m",
+                "input": "Find news",
+                "max_output_tokens": 0,
+                "tools": [{"type": "web_search"}],
+            }
+        )
+
+    assert "max_output_tokens" in exc.value.message

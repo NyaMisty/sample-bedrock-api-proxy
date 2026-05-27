@@ -182,10 +182,13 @@ def _convert_input_to_messages(input_value: Any) -> list[dict[str, Any]]:
 
 def _tool_choice(body: dict[str, Any]) -> Any:
     choice = body.get("tool_choice")
-    if choice in (None, "auto"):
+    if choice is None:
         return None
-    if choice in {"required", "web_search"}:
-        return {"type": "tool", "name": "web_search"}
+    if isinstance(choice, str):
+        if choice == "auto":
+            return None
+        if choice in {"required", "web_search"}:
+            return {"type": "tool", "name": "web_search"}
     if isinstance(choice, dict):
         if choice.get("type") in OPENAI_WEB_SEARCH_TOOL_TYPES:
             return {"type": "tool", "name": "web_search"}
@@ -197,7 +200,13 @@ def _tool_choice(body: dict[str, Any]) -> Any:
 
 def build_message_request(body: dict[str, Any]) -> MessageRequest:
     options = extract_web_search_options(body)
-    max_tokens = int(body.get("max_output_tokens") or body.get("max_tokens") or 4096)
+    if "max_output_tokens" in body:
+        max_tokens_value = body["max_output_tokens"]
+    elif "max_tokens" in body:
+        max_tokens_value = body["max_tokens"]
+    else:
+        max_tokens_value = 4096
+    max_tokens = int(max_tokens_value)
     if max_tokens < 1:
         raise OpenAIResponsesWebSearchError("max_output_tokens must be greater than 0")
 
