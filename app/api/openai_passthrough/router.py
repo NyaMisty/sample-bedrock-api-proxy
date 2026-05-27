@@ -5,6 +5,7 @@ Mounted at /openai/v1 only when settings.enable_openai_passthrough is True.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from typing import Any, cast
 from uuid import uuid4
 
@@ -21,9 +22,12 @@ from app.api.openai_passthrough.streaming import (
 from app.api.openai_passthrough.usage_extractor import normalize_usage
 from app.api.openai_passthrough.web_search import (
     OpenAIResponsesWebSearchError,
+    build_message_request,
+    build_response_json,
     ensure_web_search_enabled,
     handle_non_streaming_web_search,
     is_responses_web_search_request,
+    stream_response_events,
 )
 from app.db.dynamodb import DynamoDBClient, ModelMappingManager, UsageTracker
 from app.middleware.auth import get_api_key_info
@@ -132,15 +136,51 @@ async def responses_create(
     body["model"] = resolve_model_id(body.get("model", ""), mapping)
     extra = _passthrough_extra_headers(request)
 
-    if is_responses_web_search_request(body) and not body.get("stream"):
+    if is_responses_web_search_request(body):
         request_id = f"resp-{uuid4().hex}"
         service_tier = api_key_info.get("service_tier", "default")
         try:
             ensure_web_search_enabled()
+            message_request = build_message_request(body)
+        except OpenAIResponsesWebSearchError as exc:
+            return JSONResponse(exc.to_error_body(), status_code=exc.status_code)
+
+        web_search_service = get_web_search_service()
+        bedrock_service = BedrockService()
+
+        if body.get("stream"):
+            async def on_local_stream_complete() -> AsyncIterator[bytes]:
+                response = await web_search_service.handle_request(
+                    request=message_request,
+                    bedrock_service=bedrock_service,
+                    request_id=request_id,
+                    service_tier=service_tier,
+                    anthropic_beta=None,
+                )
+                data = build_response_json(
+                    response,
+                    original_model=body.get("model", ""),
+                    response_id=request_id,
+                )
+                if isinstance(data.get("usage"), dict):
+                    _record_usage(api_key_info, data["usage"], body["model"], "responses")
+                async for chunk in stream_response_events(
+                    response,
+                    original_model=body.get("model", ""),
+                    response_id=request_id,
+                ):
+                    yield chunk
+
+            return StreamingResponse(
+                on_local_stream_complete(),
+                media_type="text/event-stream",
+            )
+
+        try:
             data = await handle_non_streaming_web_search(
                 body,
-                web_search_service=get_web_search_service(),
-                bedrock_service=BedrockService(),
+                web_search_service=web_search_service,
+                bedrock_service=bedrock_service,
                 request_id=request_id,
                 service_tier=service_tier,
             )

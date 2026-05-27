@@ -201,6 +201,79 @@ def test_non_streaming_responses_web_search_uses_local_adapter_not_upstream(
     assert kw["output_tokens"] == 2
 
 
+def test_streaming_responses_web_search_emits_local_responses_sse(
+    client,
+    respx_mock,
+    mock_usage_tracker,
+    mock_web_search_service,
+):
+    mock_web_search_service.handle_request.return_value = MessageResponse(
+        id="msg-local",
+        type="message",
+        role="assistant",
+        model="m",
+        stop_reason="end_turn",
+        content=[{"type": "text", "text": "streamed answer"}],
+        usage=Usage(
+            input_tokens=4,
+            output_tokens=3,
+            server_tool_use={"web_search_requests": 1},
+        ),
+    )
+    route = respx_mock.post("/responses").mock(
+        return_value=httpx.Response(500, json={"error": {"message": "should not call"}})
+    )
+
+    with client.stream(
+        "POST",
+        "/openai/v1/responses",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "m",
+            "input": "Search the web",
+            "stream": True,
+            "tools": [{"type": "web_search"}],
+        },
+    ) as r:
+        out = b"".join(r.iter_bytes()).decode("utf-8")
+
+    assert "event: response.created" in out
+    assert "event: response.output_text.delta" in out
+    assert "streamed answer" in out
+    assert "event: response.completed" in out
+    assert not route.called
+    kw = mock_usage_tracker.record_usage.call_args.kwargs
+    assert kw["api_surface"] == "responses"
+    assert kw["input_tokens"] == 4
+    assert kw["output_tokens"] == 3
+
+
+def test_responses_web_search_rejects_external_web_access_false(
+    client,
+    respx_mock,
+    mock_usage_tracker,
+):
+    route = respx_mock.post("/responses").mock(
+        return_value=httpx.Response(500, json={"error": {"message": "should not call"}})
+    )
+
+    r = client.post(
+        "/openai/v1/responses",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "m",
+            "input": "Search the web",
+            "tools": [{"type": "web_search", "external_web_access": False}],
+        },
+    )
+
+    assert r.status_code == 400
+    assert r.json()["error"]["type"] == "invalid_request_error"
+    assert "external_web_access" in r.json()["error"]["message"]
+    assert not route.called
+    assert not mock_usage_tracker.record_usage.called
+
+
 @pytest.mark.parametrize("web_search_enabled", [False], indirect=True)
 def test_non_streaming_responses_web_search_disabled_skips_local_dependencies(
     fail_web_search_dependency_construction,
