@@ -1,5 +1,7 @@
 """Tests for sharded DynamoDB storage of Responses API context."""
 
+import hashlib
+
 import pytest
 
 from app.api.openai_passthrough.context_store import (
@@ -88,6 +90,22 @@ def test_sharded_context_store_rejects_wrong_api_key():
 
     with pytest.raises(ResponseContextNotFound):
         store.load("resp_1", api_key="other-key")
+
+
+def test_sharded_context_store_uses_keyed_owner_digest():
+    table = FakeTable()
+    store = ShardedResponseContextStore(table)
+    store.save(
+        response_id="resp_1",
+        api_key="owner-key",
+        request=_message_request("Find news."),
+        response_data={"output_text": "Answer"},
+    )
+
+    stored_hash = table.items[("resp_1", "META")]["api_key_hash"]
+    bare_sha256 = hashlib.sha256(b"owner-key").hexdigest()
+
+    assert stored_hash != bare_sha256
 
 
 def test_sharded_context_store_rejects_missing_chunk():
