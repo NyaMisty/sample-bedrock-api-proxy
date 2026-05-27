@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
-import hmac
 import json
 import time
 from typing import Any
@@ -28,8 +27,8 @@ def _api_key_hash(api_key: str) -> str:
         or settings.provider_key_encryption_secret
         or "openai-responses-context-store"
     )
-    key = f"{secret}:openai-responses-context-v1".encode()
-    return hmac.new(key, api_key.encode("utf-8"), hashlib.sha256).hexdigest()
+    salt = f"{secret}:openai-responses-context-v1".encode()
+    return hashlib.pbkdf2_hmac("sha256", api_key.encode(), salt, 120_000).hex()
 
 
 def _content_text(content: Any) -> str:
