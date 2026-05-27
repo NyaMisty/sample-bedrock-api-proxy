@@ -273,6 +273,22 @@ def test_build_message_request_rejects_invalid_user_location_field_type():
     assert "user_location" in exc.value.message
 
 
+def test_build_message_request_wraps_schema_validation_errors():
+    with pytest.raises(OpenAIResponsesWebSearchError) as exc:
+        build_message_request(
+            {
+                "model": "m",
+                "input": "Find news",
+                "temperature": 2,
+                "tools": [{"type": "web_search"}],
+            }
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.error_type == "invalid_request_error"
+    assert "temperature" in exc.value.message
+
+
 def test_build_response_json_maps_text_annotations_and_usage():
     content: list[Any] = [
         {

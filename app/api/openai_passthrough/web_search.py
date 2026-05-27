@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from app.core.config import settings
 from app.schemas.anthropic import Message, MessageRequest, MessageResponse
 from app.schemas.web_search import UserLocation
@@ -522,15 +524,18 @@ def build_message_request(body: dict[str, Any]) -> MessageRequest:
             exclude_none=True
         )
 
-    return MessageRequest(
-        model=str(body.get("model") or ""),
-        messages=_convert_input_to_messages(body.get("input")),
-        max_tokens=max_tokens,
-        system=body.get("instructions"),
-        temperature=body.get("temperature"),
-        top_p=body.get("top_p"),
-        top_k=None,
-        stream=False,
-        tools=[web_search_tool],
-        tool_choice=_tool_choice(body),
-    )
+    try:
+        return MessageRequest(
+            model=str(body.get("model") or ""),
+            messages=_convert_input_to_messages(body.get("input")),
+            max_tokens=max_tokens,
+            system=body.get("instructions"),
+            temperature=body.get("temperature"),
+            top_p=body.get("top_p"),
+            top_k=None,
+            stream=False,
+            tools=[web_search_tool],
+            tool_choice=_tool_choice(body),
+        )
+    except ValidationError as exc:
+        raise OpenAIResponsesWebSearchError(str(exc)) from exc

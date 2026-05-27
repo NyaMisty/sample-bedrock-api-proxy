@@ -76,6 +76,13 @@ def _record_usage(
         logger.warning("[OPENAI-PASSTHROUGH] usage recording failed: %s", exc)
 
 
+def _api_error_response(exc: Exception) -> JSONResponse:
+    return JSONResponse(
+        {"error": {"message": str(exc), "type": "api_error"}},
+        status_code=500,
+    )
+
+
 def _passthrough_extra_headers(request: Request) -> dict[str, str]:
     """Forward Bedrock-specific headers from the client to upstream (e.g. guardrails)."""
     extra: dict[str, str] = {}
@@ -163,10 +170,7 @@ async def responses_create(
                     anthropic_beta=None,
                 )
             except Exception as exc:
-                return JSONResponse(
-                    {"error": {"message": str(exc), "type": "api_error"}},
-                    status_code=500,
-                )
+                return _api_error_response(exc)
 
             data = build_response_json(
                 response,
@@ -196,6 +200,8 @@ async def responses_create(
             )
         except OpenAIResponsesWebSearchError as exc:
             return JSONResponse(exc.to_error_body(), status_code=exc.status_code)
+        except Exception as exc:
+            return _api_error_response(exc)
         if isinstance(data.get("usage"), dict):
             _record_usage(api_key_info, data["usage"], body["model"], "responses")
         return JSONResponse(data, status_code=200)

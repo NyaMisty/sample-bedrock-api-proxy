@@ -334,6 +334,36 @@ def test_streaming_responses_web_search_service_failure_returns_json_error(
     assert not mock_usage_tracker.record_usage.called
 
 
+def test_non_streaming_responses_web_search_service_failure_returns_json_error(
+    client,
+    respx_mock,
+    mock_usage_tracker,
+    mock_web_search_service,
+):
+    mock_web_search_service.handle_request.side_effect = RuntimeError("local failed")
+    route = respx_mock.post("/responses").mock(
+        return_value=httpx.Response(500, json={"error": {"message": "should not call"}})
+    )
+
+    r = client.post(
+        "/openai/v1/responses",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "m",
+            "input": "Search the web",
+            "tools": [{"type": "web_search"}],
+        },
+    )
+
+    assert r.status_code == 500
+    assert r.headers["content-type"].startswith("application/json")
+    data = r.json()
+    assert data["error"]["type"] == "api_error"
+    assert "local failed" in data["error"]["message"]
+    assert not route.called
+    assert not mock_usage_tracker.record_usage.called
+
+
 def test_responses_web_search_rejects_external_web_access_false(
     client,
     respx_mock,
