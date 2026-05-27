@@ -72,7 +72,11 @@ def _extract_search_count(response: MessageResponse) -> int:
     server_tool_use = response.usage.server_tool_use if response.usage else None
     if not isinstance(server_tool_use, dict):
         return 0
-    return int(server_tool_use.get("web_search_requests", 0) or 0)
+    try:
+        count = int(server_tool_use.get("web_search_requests", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(count, 0)
 
 
 def _text_and_annotations(content: list[Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -97,21 +101,13 @@ def _text_and_annotations(content: list[Any]) -> tuple[str, list[dict[str, Any]]
                 continue
             if citation.get("type") != "web_search_result_location":
                 continue
-            cited_text = str(citation.get("cited_text") or "")
-            cited_start = text.find(cited_text) if cited_text else -1
-            if cited_start >= 0:
-                ann_start = start + cited_start
-                ann_end = ann_start + len(cited_text)
-            else:
-                ann_start = start
-                ann_end = end
             annotations.append(
                 {
                     "type": "url_citation",
                     "url": citation.get("url", ""),
                     "title": citation.get("title", ""),
-                    "start_index": ann_start,
-                    "end_index": ann_end,
+                    "start_index": start,
+                    "end_index": end,
                 }
             )
 
@@ -129,7 +125,7 @@ def build_response_json(
     search_count = _extract_search_count(response)
 
     output: list[dict[str, Any]] = []
-    if search_count > 0:
+    for _ in range(search_count):
         output.append(
             {
                 "id": f"ws_{uuid4().hex[:24]}",

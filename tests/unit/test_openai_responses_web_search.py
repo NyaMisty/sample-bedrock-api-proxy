@@ -309,6 +309,103 @@ def test_build_response_json_maps_text_annotations_and_usage():
     ann = message["content"][0]["annotations"][0]
     assert ann["type"] == "url_citation"
     assert ann["url"] == "https://docs.python.org/3/whatsnew/3.13.html"
-    assert 0 <= ann["start_index"] <= ann["end_index"] <= len(data["output_text"])
+    assert ann["start_index"] == 0
+    assert ann["end_index"] == len(data["output_text"])
     assert data["usage"] == {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
     assert data["metadata"]["web_search_requests"] == 1
+
+
+def test_build_response_json_emits_one_web_search_call_per_request():
+    content: list[Any] = [{"type": "text", "text": "done"}]
+    msg = MessageResponse(
+        id="msg-local",
+        type="message",
+        role="assistant",
+        model="m",
+        stop_reason="end_turn",
+        content=content,
+        usage=Usage(
+            input_tokens=10,
+            output_tokens=5,
+            server_tool_use={"web_search_requests": 2},
+        ),
+    )
+
+    data = build_response_json(msg, original_model="m")
+
+    assert [item["type"] for item in data["output"]] == [
+        "web_search_call",
+        "web_search_call",
+        "message",
+    ]
+    assert data["metadata"]["web_search_requests"] == 2
+
+
+def test_build_response_json_uses_full_text_block_annotation_offsets():
+    content: list[Any] = [
+        {
+            "type": "text",
+            "text": "first",
+            "citations": [
+                {
+                    "type": "web_search_result_location",
+                    "url": "https://example.com/first",
+                    "title": "First",
+                    "cited_text": "first",
+                }
+            ],
+        },
+        {
+            "type": "text",
+            "text": "second",
+            "citations": [
+                {
+                    "type": "web_search_result_location",
+                    "url": "https://example.com/second",
+                    "title": "Second",
+                    "cited_text": "second",
+                }
+            ],
+        },
+    ]
+    msg = MessageResponse(
+        id="msg-local",
+        type="message",
+        role="assistant",
+        model="m",
+        stop_reason="end_turn",
+        content=content,
+        usage=Usage(input_tokens=10, output_tokens=5),
+    )
+
+    data = build_response_json(msg, original_model="m")
+
+    message = data["output"][0]
+    annotations = message["content"][0]["annotations"]
+    assert data["output_text"] == "first\nsecond"
+    assert annotations[0]["start_index"] == 0
+    assert annotations[0]["end_index"] == 5
+    assert annotations[1]["start_index"] == 6
+    assert annotations[1]["end_index"] == 12
+
+
+def test_build_response_json_ignores_malformed_web_search_count():
+    content: list[Any] = [{"type": "text", "text": "done"}]
+    msg = MessageResponse(
+        id="msg-local",
+        type="message",
+        role="assistant",
+        model="m",
+        stop_reason="end_turn",
+        content=content,
+        usage=Usage(
+            input_tokens=10,
+            output_tokens=5,
+            server_tool_use={"web_search_requests": "bad"},
+        ),
+    )
+
+    data = build_response_json(msg, original_model="m")
+
+    assert [item["type"] for item in data["output"]] == ["message"]
+    assert "metadata" not in data
