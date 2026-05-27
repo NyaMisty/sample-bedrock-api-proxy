@@ -1,5 +1,5 @@
 """Shared fixtures for openai-passthrough integration tests."""
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import respx
@@ -14,6 +14,7 @@ def mock_settings(monkeypatch):
     monkeypatch.setattr("app.core.config.settings.openai_base_url", "https://mantle.test/v1")
     monkeypatch.setattr("app.core.config.settings.require_api_key", True)
     monkeypatch.setattr("app.core.config.settings.master_api_key", "")
+    monkeypatch.setattr("app.core.config.settings.enable_web_search", True)
 
 
 @pytest.fixture
@@ -45,6 +46,29 @@ def mock_usage_tracker():
 
 
 @pytest.fixture
+def mock_web_search_service():
+    service = MagicMock()
+    service.handle_request = AsyncMock()
+    with patch(
+        "app.api.openai_passthrough.router.get_web_search_service",
+        return_value=service,
+        create=True,
+    ):
+        yield service
+
+
+@pytest.fixture
+def mock_bedrock_service():
+    service = MagicMock()
+    with patch(
+        "app.api.openai_passthrough.router.BedrockService",
+        return_value=service,
+        create=True,
+    ):
+        yield service
+
+
+@pytest.fixture
 def respx_mock():
     """respx mock router for httpx calls."""
     with respx.mock(base_url="https://mantle.test/v1", assert_all_called=False) as router:
@@ -52,7 +76,14 @@ def respx_mock():
 
 
 @pytest.fixture
-def client(mock_settings, mock_api_key_manager, mock_model_mapping_manager, mock_usage_tracker):
+def client(
+    mock_settings,
+    mock_api_key_manager,
+    mock_model_mapping_manager,
+    mock_usage_tracker,
+    mock_web_search_service,
+    mock_bedrock_service,
+):
     """FastAPI TestClient with all mocks wired in.
 
     Imports inside the fixture so module-level settings reads happen after

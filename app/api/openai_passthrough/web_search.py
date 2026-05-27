@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import uuid4
 
+from app.core.config import settings
 from app.schemas.anthropic import Message, MessageRequest, MessageResponse
 from app.schemas.web_search import UserLocation
 
@@ -183,6 +184,27 @@ def build_response_json(
     if search_count > 0:
         data["metadata"] = {"web_search_requests": search_count}
     return data
+
+
+async def handle_non_streaming_web_search(
+    body: dict[str, Any],
+    *,
+    web_search_service: Any,
+    bedrock_service: Any,
+    request_id: str,
+    service_tier: str,
+) -> dict[str, Any]:
+    if not settings.enable_web_search:
+        raise OpenAIResponsesWebSearchError("Web search is disabled")
+    message_request = build_message_request(body)
+    response = await web_search_service.handle_request(
+        request=message_request,
+        bedrock_service=bedrock_service,
+        request_id=request_id,
+        service_tier=service_tier,
+        anthropic_beta=None,
+    )
+    return build_response_json(response, original_model=body.get("model", ""))
 
 
 def _sse(event_type: str, payload: dict[str, Any]) -> bytes:

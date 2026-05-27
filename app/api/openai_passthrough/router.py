@@ -19,8 +19,15 @@ from app.api.openai_passthrough.streaming import (
     stream_passthrough_response,
 )
 from app.api.openai_passthrough.usage_extractor import normalize_usage
+from app.api.openai_passthrough.web_search import (
+    OpenAIResponsesWebSearchError,
+    handle_non_streaming_web_search,
+    is_responses_web_search_request,
+)
 from app.db.dynamodb import DynamoDBClient, ModelMappingManager, UsageTracker
 from app.middleware.auth import get_api_key_info
+from app.services.bedrock_service import BedrockService
+from app.services.web_search_service import get_web_search_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -123,6 +130,23 @@ async def responses_create(
     mapping, _ = _managers()
     body["model"] = resolve_model_id(body.get("model", ""), mapping)
     extra = _passthrough_extra_headers(request)
+
+    if is_responses_web_search_request(body) and not body.get("stream"):
+        request_id = f"resp-{uuid4().hex}"
+        service_tier = api_key_info.get("service_tier", "default")
+        try:
+            data = await handle_non_streaming_web_search(
+                body,
+                web_search_service=get_web_search_service(),
+                bedrock_service=BedrockService(),
+                request_id=request_id,
+                service_tier=service_tier,
+            )
+        except OpenAIResponsesWebSearchError as exc:
+            return JSONResponse(exc.to_error_body(), status_code=exc.status_code)
+        if isinstance(data.get("usage"), dict):
+            _record_usage(api_key_info, data["usage"], body["model"], "responses")
+        return JSONResponse(data, status_code=200)
 
     if body.get("stream"):
         try:

@@ -3,6 +3,8 @@ import json
 
 import httpx
 
+from app.schemas.anthropic import MessageResponse, Usage
+
 
 def test_non_streaming_responses_forwards_and_logs_usage(
     client, respx_mock, mock_usage_tracker
@@ -136,3 +138,50 @@ def test_streaming_responses_upstream_4xx_returns_json_not_sse(
         f"expected JSON content-type, got {r.headers['content-type']}"
     assert r.json() == err
     assert not mock_usage_tracker.record_usage.called
+
+
+def test_non_streaming_responses_web_search_uses_local_adapter_not_upstream(
+    client,
+    respx_mock,
+    mock_usage_tracker,
+    mock_web_search_service,
+):
+    mock_web_search_service.handle_request.return_value = MessageResponse(
+        id="msg-local",
+        type="message",
+        role="assistant",
+        model="m",
+        stop_reason="end_turn",
+        content=[{"type": "text", "text": "answer"}],
+        usage=Usage(
+            input_tokens=3,
+            output_tokens=2,
+            server_tool_use={"web_search_requests": 1},
+        ),
+    )
+    route = respx_mock.post("/responses").mock(
+        return_value=httpx.Response(500, json={"error": {"message": "should not call"}})
+    )
+
+    r = client.post(
+        "/openai/v1/responses",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "m",
+            "input": "Search the web",
+            "tools": [{"type": "web_search"}],
+        },
+    )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["object"] == "response"
+    assert data["output"][0]["type"] == "web_search_call"
+    assert data["output_text"] == "answer"
+    assert data["usage"] == {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+    assert not route.called
+    assert mock_web_search_service.handle_request.called
+    kw = mock_usage_tracker.record_usage.call_args.kwargs
+    assert kw["api_surface"] == "responses"
+    assert kw["input_tokens"] == 3
+    assert kw["output_tokens"] == 2
