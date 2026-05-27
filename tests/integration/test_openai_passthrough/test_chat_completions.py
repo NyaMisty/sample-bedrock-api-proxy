@@ -64,6 +64,42 @@ def test_model_mapping_is_applied(
     assert sent["model"] == "openai.gpt-oss-120b"
 
 
+def test_chat_completions_web_search_shape_still_passthrough(client, respx_mock):
+    route = respx_mock.post("/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "model": "m",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+    )
+
+    r = client.post(
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "web_search"}],
+        },
+    )
+
+    assert r.status_code == 200
+    assert route.called
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["tools"] == [{"type": "web_search"}]
+
+
 def test_upstream_4xx_returned_verbatim(client, respx_mock, mock_usage_tracker):
     err_body = {"error": {"message": "model not found", "type": "invalid_request_error"}}
     respx_mock.post("/chat/completions").mock(

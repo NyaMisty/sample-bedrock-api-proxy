@@ -93,6 +93,7 @@
   - 自动将 Anthropic `thinking` 配置映射为 OpenAI `reasoning`（`budget_tokens` → `effort: high/medium/low`）
   - 支持流式和非流式响应、工具调用、多模态内容
   - Claude 模型不受影响，仍使用 InvokeModel API
+- **Responses API Web Search 兼容**：`POST /openai/v1/responses` 可以通过现有 Tavily/Brave 搜索提供商在代理侧执行 `tools: [{"type": "web_search"}]`。该能力仅适用于 Responses API；Chat Completions 继续保持透传。当前支持实时搜索；`external_web_access: false` 和 `return_token_budget` 会被代理侧路径拒绝。
 
 ### 基础设施
 - **身份验证**：基于 API 密钥的身份验证，使用 DynamoDB 存储

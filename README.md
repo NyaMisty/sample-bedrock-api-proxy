@@ -95,6 +95,7 @@ This lightweight API convertion service enables you to use various large languag
   - Automatically maps Anthropic `thinking` to OpenAI `reasoning` (`budget_tokens` → `effort: high/medium/low`)
   - Supports streaming and non-streaming responses, tool calling, multimodal content
   - Claude models remain unaffected, still using InvokeModel API
+- **Responses API Web Search Compatibility**: `POST /openai/v1/responses` can execute `tools: [{"type": "web_search"}]` proxy-side using the existing Tavily/Brave web search providers. This applies only to Responses API; Chat Completions remains passthrough. Live search is supported; `external_web_access: false` and `return_token_budget` are rejected by the proxy-managed path.
 
 ### Infrastructure
 - **Authentication**: API key-based authentication with DynamoDB storage
@@ -1593,5 +1594,4 @@ Contributions are welcome! Please:
 ## License
 
 MIT-0
-
 
