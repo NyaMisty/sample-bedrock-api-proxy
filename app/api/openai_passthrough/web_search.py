@@ -6,9 +6,9 @@ tool to the proxy's existing Anthropic Messages web search implementation.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
-from app.schemas.anthropic import MessageRequest
+from app.schemas.anthropic import Message, MessageRequest
 from app.schemas.web_search import UserLocation
 
 OPENAI_WEB_SEARCH_TOOL_TYPES = {"web_search", "web_search_preview"}
@@ -69,6 +69,12 @@ def _parse_user_location(raw: Any) -> UserLocation | None:
         return None
     if not isinstance(raw, dict):
         raise OpenAIResponsesWebSearchError("user_location must be an object")
+    for field_name in ("type", "city", "region", "country", "timezone"):
+        value = raw.get(field_name)
+        if value is not None and not isinstance(value, str):
+            raise OpenAIResponsesWebSearchError(
+                f"user_location.{field_name} must be a string"
+            )
     if raw.get("type", "approximate") != "approximate":
         raise OpenAIResponsesWebSearchError("Only approximate user_location is supported")
     return UserLocation(
@@ -152,32 +158,56 @@ def _content_text(content: Any) -> str:
     return ""
 
 
-def _convert_input_to_messages(input_value: Any) -> list[dict[str, Any]]:
+def _convert_input_to_messages(input_value: Any) -> list[Message]:
     if isinstance(input_value, str):
         if not input_value.strip():
             raise OpenAIResponsesWebSearchError("input must not be empty")
-        return [{"role": "user", "content": [{"type": "text", "text": input_value}]}]
+        return [Message(role="user", content=input_value)]
 
     if not isinstance(input_value, list) or not input_value:
         raise OpenAIResponsesWebSearchError("input is required for web_search requests")
 
-    messages: list[dict[str, Any]] = []
+    messages: list[Message] = []
     for item in input_value:
         if isinstance(item, str):
-            messages.append({"role": "user", "content": [{"type": "text", "text": item}]})
+            messages.append(Message(role="user", content=item))
             continue
         if not isinstance(item, dict):
             continue
-        role = item.get("role")
-        if role not in {"user", "assistant"}:
+        role_value = item.get("role")
+        role: Literal["user", "assistant"]
+        if role_value == "user":
+            role = "user"
+        elif role_value == "assistant":
+            role = "assistant"
+        else:
             continue
         text = _content_text(item.get("content", ""))
         if text:
-            messages.append({"role": role, "content": [{"type": "text", "text": text}]})
+            messages.append(Message(role=role, content=text))
 
     if not messages:
         raise OpenAIResponsesWebSearchError("input must contain at least one message")
     return messages
+
+
+def _max_tokens(body: dict[str, Any]) -> int:
+    if "max_output_tokens" in body:
+        max_tokens_value = body["max_output_tokens"]
+    elif "max_tokens" in body:
+        max_tokens_value = body["max_tokens"]
+    else:
+        max_tokens_value = 4096
+
+    try:
+        max_tokens = int(max_tokens_value)
+    except (TypeError, ValueError) as exc:
+        raise OpenAIResponsesWebSearchError(
+            "max_output_tokens must be an integer greater than 0"
+        ) from exc
+    if max_tokens < 1:
+        raise OpenAIResponsesWebSearchError("max_output_tokens must be greater than 0")
+    return max_tokens
 
 
 def _tool_choice(body: dict[str, Any]) -> Any:
@@ -200,15 +230,7 @@ def _tool_choice(body: dict[str, Any]) -> Any:
 
 def build_message_request(body: dict[str, Any]) -> MessageRequest:
     options = extract_web_search_options(body)
-    if "max_output_tokens" in body:
-        max_tokens_value = body["max_output_tokens"]
-    elif "max_tokens" in body:
-        max_tokens_value = body["max_tokens"]
-    else:
-        max_tokens_value = 4096
-    max_tokens = int(max_tokens_value)
-    if max_tokens < 1:
-        raise OpenAIResponsesWebSearchError("max_output_tokens must be greater than 0")
+    max_tokens = _max_tokens(body)
 
     web_search_tool: dict[str, Any] = {
         "type": "web_search_20250305",
@@ -230,6 +252,7 @@ def build_message_request(body: dict[str, Any]) -> MessageRequest:
         system=body.get("instructions"),
         temperature=body.get("temperature"),
         top_p=body.get("top_p"),
+        top_k=None,
         stream=False,
         tools=[web_search_tool],
         tool_choice=_tool_choice(body),

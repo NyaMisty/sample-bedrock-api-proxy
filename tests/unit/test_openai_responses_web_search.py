@@ -11,6 +11,16 @@ from app.api.openai_passthrough.web_search import (
 from app.schemas.anthropic import MessageRequest
 
 
+def _message_text(req: MessageRequest, index: int) -> str:
+    content = req.messages[index].model_dump()["content"]
+    assert isinstance(content, list)
+    first = content[0]
+    assert isinstance(first, dict)
+    text = first["text"]
+    assert isinstance(text, str)
+    return text
+
+
 def test_is_responses_web_search_request_detects_current_and_preview_tools():
     assert is_responses_web_search_request({"tools": [{"type": "web_search"}]})
     assert is_responses_web_search_request({"tools": [{"type": "web_search_preview"}]})
@@ -109,7 +119,7 @@ def test_build_message_request_converts_string_input_and_instructions():
     assert req.max_tokens == 777
     assert req.system is not None
     assert req.messages[0].role == "user"
-    assert req.messages[0].content[0].text == "What changed in Python 3.13?"
+    assert _message_text(req, 0) == "What changed in Python 3.13?"
     assert req.temperature == 0.2
     assert req.top_p == 0.9
     assert req.tools == [{"type": "web_search_20250305", "name": "web_search"}]
@@ -143,9 +153,9 @@ def test_build_message_request_converts_responses_input_array_and_filters():
     )
 
     assert [m.role for m in req.messages] == ["user", "assistant", "user"]
-    assert req.messages[0].content[0].text == "Find current news"
-    assert req.messages[1].content[0].text == "What topic?"
-    assert req.messages[2].content[0].text == "AI infrastructure"
+    assert _message_text(req, 0) == "Find current news"
+    assert _message_text(req, 1) == "What topic?"
+    assert _message_text(req, 2) == "AI infrastructure"
     assert req.tools == [
         {
             "type": "web_search_20250305",
@@ -201,3 +211,35 @@ def test_build_message_request_rejects_zero_max_output_tokens():
         )
 
     assert "max_output_tokens" in exc.value.message
+
+
+def test_build_message_request_rejects_invalid_max_output_tokens():
+    with pytest.raises(OpenAIResponsesWebSearchError) as exc:
+        build_message_request(
+            {
+                "model": "m",
+                "input": "Find news",
+                "max_output_tokens": "abc",
+                "tools": [{"type": "web_search"}],
+            }
+        )
+
+    assert "max_output_tokens" in exc.value.message
+
+
+def test_build_message_request_rejects_invalid_user_location_field_type():
+    with pytest.raises(OpenAIResponsesWebSearchError) as exc:
+        build_message_request(
+            {
+                "model": "m",
+                "input": "Find news",
+                "tools": [
+                    {
+                        "type": "web_search",
+                        "user_location": {"type": "approximate", "city": 123},
+                    }
+                ],
+            }
+        )
+
+    assert "user_location" in exc.value.message
