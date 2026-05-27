@@ -5,14 +5,9 @@ tool to the proxy's existing Anthropic Messages web search implementation.
 """
 from __future__ import annotations
 
-import json
-import time
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
-from uuid import uuid4
+from typing import Any
 
-from app.core.config import settings
-from app.schemas.anthropic import MessageRequest, MessageResponse
 from app.schemas.web_search import UserLocation
 
 OPENAI_WEB_SEARCH_TOOL_TYPES = {"web_search", "web_search_preview"}
