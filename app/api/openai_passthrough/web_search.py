@@ -223,8 +223,9 @@ async def stream_response_events(
     *,
     original_model: str,
     response_id: str | None = None,
+    response_data: dict[str, Any] | None = None,
 ) -> AsyncIterator[bytes]:
-    data = build_response_json(
+    data = response_data or build_response_json(
         response,
         original_model=original_model,
         response_id=response_id,

@@ -5,7 +5,6 @@ Mounted at /openai/v1 only when settings.enable_openai_passthrough is True.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
 from typing import Any, cast
 from uuid import uuid4
 
@@ -149,7 +148,7 @@ async def responses_create(
         bedrock_service = BedrockService()
 
         if body.get("stream"):
-            async def on_local_stream_complete() -> AsyncIterator[bytes]:
+            try:
                 response = await web_search_service.handle_request(
                     request=message_request,
                     bedrock_service=bedrock_service,
@@ -157,22 +156,27 @@ async def responses_create(
                     service_tier=service_tier,
                     anthropic_beta=None,
                 )
-                data = build_response_json(
-                    response,
-                    original_model=body.get("model", ""),
-                    response_id=request_id,
+            except Exception as exc:
+                return JSONResponse(
+                    {"error": {"message": str(exc), "type": "api_error"}},
+                    status_code=500,
                 )
-                if isinstance(data.get("usage"), dict):
-                    _record_usage(api_key_info, data["usage"], body["model"], "responses")
-                async for chunk in stream_response_events(
-                    response,
-                    original_model=body.get("model", ""),
-                    response_id=request_id,
-                ):
-                    yield chunk
+
+            data = build_response_json(
+                response,
+                original_model=body.get("model", ""),
+                response_id=request_id,
+            )
+            if isinstance(data.get("usage"), dict):
+                _record_usage(api_key_info, data["usage"], body["model"], "responses")
 
             return StreamingResponse(
-                on_local_stream_complete(),
+                stream_response_events(
+                    response,
+                    original_model=body.get("model", ""),
+                    response_id=request_id,
+                    response_data=data,
+                ),
                 media_type="text/event-stream",
             )
 
