@@ -409,3 +409,28 @@ def test_build_response_json_ignores_malformed_web_search_count():
 
     assert [item["type"] for item in data["output"]] == ["message"]
     assert "metadata" not in data
+
+
+@pytest.mark.parametrize("web_search_requests", [True, 1.5, float("inf")])
+def test_build_response_json_ignores_non_integer_web_search_count(
+    web_search_requests: Any,
+):
+    content: list[Any] = [{"type": "text", "text": "done"}]
+    msg = MessageResponse(
+        id="msg-local",
+        type="message",
+        role="assistant",
+        model="m",
+        stop_reason="end_turn",
+        content=content,
+        usage=Usage(
+            input_tokens=10,
+            output_tokens=5,
+            server_tool_use={"web_search_requests": web_search_requests},
+        ),
+    )
+
+    data = build_response_json(msg, original_model="m")
+
+    assert [item["type"] for item in data["output"]] == ["message"]
+    assert "metadata" not in data

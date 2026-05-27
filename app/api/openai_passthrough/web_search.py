@@ -5,6 +5,7 @@ tool to the proxy's existing Anthropic Messages web search implementation.
 """
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -72,8 +73,19 @@ def _extract_search_count(response: MessageResponse) -> int:
     server_tool_use = response.usage.server_tool_use if response.usage else None
     if not isinstance(server_tool_use, dict):
         return 0
+    value = server_tool_use.get("web_search_requests", 0)
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(value, 0)
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            return 0
+        return max(int(value), 0)
+    if not isinstance(value, str):
+        return 0
     try:
-        count = int(server_tool_use.get("web_search_requests", 0) or 0)
+        count = int(value or 0)
     except (TypeError, ValueError):
         return 0
     return max(count, 0)
