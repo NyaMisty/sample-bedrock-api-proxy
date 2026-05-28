@@ -262,6 +262,85 @@ curl http://localhost:8000/v1/messages \
 curl http://localhost:8000/v1/models -H "x-api-key: sk-xxx"
 ```
 
+### OpenAI SDK (`/openai/v1`)
+
+Requires `ENABLE_OPENAI_PASSTHROUGH=True` on the proxy. Point the OpenAI SDK at `<proxy>/openai/v1` and use your **proxy API key** — the proxy supplies the upstream Bedrock credentials. Bedrock model IDs (e.g. `openai.gpt-oss-120b`) are passed through; Anthropic-style aliases are resolved via the model mapping table.
+
+#### Chat Completions API
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-your-api-key",
+    base_url="http://localhost:8000/openai/v1",
+)
+
+# Non-streaming
+resp = client.chat.completions.create(
+    model="openai.gpt-oss-120b",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(resp.choices[0].message.content)
+
+# Streaming — set stream_options to capture usage
+stream = client.chat.completions.create(
+    model="openai.gpt-oss-120b",
+    messages=[{"role": "user", "content": "Tell me a story"}],
+    stream=True,
+    stream_options={"include_usage": True},
+)
+for chunk in stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+```
+
+#### Responses API
+
+Supports stateful conversation chaining via `previous_response_id` and proxy-managed `web_search` tool calls.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-your-api-key",
+    base_url="http://localhost:8000/openai/v1",
+)
+
+# Basic call
+resp = client.responses.create(
+    model="openai.gpt-oss-120b",
+    input="What's the capital of France?",
+)
+print(resp.output_text)
+
+# Stateful follow-up using previous_response_id
+followup = client.responses.create(
+    model="openai.gpt-oss-120b",
+    input="And its population?",
+    previous_response_id=resp.id,
+)
+print(followup.output_text)
+
+# Streaming
+stream = client.responses.create(
+    model="openai.gpt-oss-120b",
+    input="Write a haiku about Bedrock",
+    stream=True,
+)
+for event in stream:
+    if event.type == "response.output_text.delta":
+        print(event.delta, end="", flush=True)
+
+# Web search (proxy-managed via Tavily/Brave)
+resp = client.responses.create(
+    model="openai.gpt-oss-120b",
+    input="What were the top AI announcements this week?",
+    tools=[{"type": "web_search"}],
+)
+print(resp.output_text)
+```
+
 ## Architecture
 
 ```

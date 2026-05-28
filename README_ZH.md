@@ -264,6 +264,85 @@ curl http://localhost:8000/v1/messages \
 curl http://localhost:8000/v1/models -H "x-api-key: sk-xxx"
 ```
 
+### OpenAI SDK（`/openai/v1`）
+
+需要在代理端启用 `ENABLE_OPENAI_PASSTHROUGH=True`。将 OpenAI SDK 的 `base_url` 指向 `<代理地址>/openai/v1`，并使用 **代理的 API Key**——代理会自动注入上游 Bedrock 凭证。Bedrock 原生模型 ID（如 `openai.gpt-oss-120b`）直接透传；Anthropic 风格的别名通过模型映射表解析。
+
+#### Chat Completions API
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-your-api-key",
+    base_url="http://localhost:8000/openai/v1",
+)
+
+# 非流式
+resp = client.chat.completions.create(
+    model="openai.gpt-oss-120b",
+    messages=[{"role": "user", "content": "你好！"}],
+)
+print(resp.choices[0].message.content)
+
+# 流式 — 通过 stream_options 捕获 usage
+stream = client.chat.completions.create(
+    model="openai.gpt-oss-120b",
+    messages=[{"role": "user", "content": "讲一个故事"}],
+    stream=True,
+    stream_options={"include_usage": True},
+)
+for chunk in stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+```
+
+#### Responses API
+
+支持通过 `previous_response_id` 进行有状态对话串联，以及代理托管的 `web_search` 工具调用。
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-your-api-key",
+    base_url="http://localhost:8000/openai/v1",
+)
+
+# 基础调用
+resp = client.responses.create(
+    model="openai.gpt-oss-120b",
+    input="法国的首都是哪里？",
+)
+print(resp.output_text)
+
+# 通过 previous_response_id 实现有状态续问
+followup = client.responses.create(
+    model="openai.gpt-oss-120b",
+    input="它的人口是多少？",
+    previous_response_id=resp.id,
+)
+print(followup.output_text)
+
+# 流式
+stream = client.responses.create(
+    model="openai.gpt-oss-120b",
+    input="写一首关于 Bedrock 的俳句",
+    stream=True,
+)
+for event in stream:
+    if event.type == "response.output_text.delta":
+        print(event.delta, end="", flush=True)
+
+# Web 搜索（代理托管，使用 Tavily/Brave）
+resp = client.responses.create(
+    model="openai.gpt-oss-120b",
+    input="本周有哪些重要的 AI 发布？",
+    tools=[{"type": "web_search"}],
+)
+print(resp.output_text)
+```
+
 ## 架构
 
 ```
