@@ -227,7 +227,7 @@ client = Anthropic(
 
 # Non-streaming
 message = client.messages.create(
-    model="qwen.qwen3-coder-480b-a35b-v1:0",
+    model="claude-opus-4-7",
     max_tokens=1024,
     messages=[{"role": "user", "content": "Hello!"}]
 )
@@ -235,7 +235,7 @@ print(message.content[0].text)
 
 # Streaming
 with client.messages.stream(
-    model="qwen.qwen3-coder-480b-a35b-v1:0",
+    model="claude-opus-4-7",
     max_tokens=1024,
     messages=[{"role": "user", "content": "Tell me a story"}]
 ) as stream:

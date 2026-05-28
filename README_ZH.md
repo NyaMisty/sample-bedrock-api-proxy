@@ -229,7 +229,7 @@ client = Anthropic(
 
 # 非流式
 message = client.messages.create(
-    model="qwen.qwen3-coder-480b-a35b-v1:0",
+    model="claude-opus-4-7",
     max_tokens=1024,
     messages=[{"role": "user", "content": "你好！"}]
 )
@@ -237,7 +237,7 @@ print(message.content[0].text)
 
 # 流式
 with client.messages.stream(
-    model="qwen.qwen3-coder-480b-a35b-v1:0",
+    model="claude-opus-4-7",
     max_tokens=1024,
     messages=[{"role": "user", "content": "讲个故事"}]
 ) as stream:
