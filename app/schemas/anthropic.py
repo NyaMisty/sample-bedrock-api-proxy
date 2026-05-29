@@ -332,7 +332,7 @@ def _coerce_openai_image_url_block(block: Any) -> Any:
 class Message(BaseModel):
     """Message in the conversation."""
 
-    role: Literal["user", "assistant"]
+    role: Literal["user", "assistant", "system"]
     content: Union[str, List[ContentBlock]]
 
     @field_validator("content", mode="before")

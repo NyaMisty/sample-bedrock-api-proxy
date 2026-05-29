@@ -74,7 +74,7 @@
 - [CloudFront HTTPS](docs/cloudfront.md) 加密（可选）
 
 ### 支持的模型
-- Claude 4.5/4.6/4.7、Claude 4.5 Haiku
+- Claude 4.5/4.6/4.7/4.8、Claude 4.5 Haiku
 - GPT-5.4/5.5
 - Qwen3-coder-480b、Qwen3-235b-instruct
 - Kimi 2.5、MiniMax 2.5、GLM 4.7/5
