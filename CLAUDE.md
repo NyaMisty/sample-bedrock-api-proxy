@@ -42,7 +42,9 @@ black app tests && ruff check app tests && mypy app
 - **OpenAI Chat Completions API** (non-Claude models, optional): When `ENABLE_OPENAI_COMPAT=True`, non-Claude models use Bedrock's OpenAI-compatible endpoint via bedrock-mantle instead of Converse API
 - **OpenAI Passthrough** (any model bedrock-mantle accepts, optional): When `ENABLE_OPENAI_PASSTHROUGH=True`, mounts `/openai/v1/{chat/completions,responses,responses/{id},models}` for clients using OpenAI-format directly.
 
-**Routing**: If model ID contains "anthropic" or "claude" → InvokeModel; else if `ENABLE_OPENAI_COMPAT` → OpenAI Chat Completions; else → Converse. OpenAI Passthrough routes are independent and mount at `/openai/v1/*`.
+**API selection**: If model ID contains "anthropic" or "claude" → InvokeModel; else if `ENABLE_OPENAI_COMPAT` → OpenAI Chat Completions; else → Converse. OpenAI Passthrough routes are independent and mount at `/openai/v1/*`.
+
+**Multi-Provider Gateway** (optional, `MULTI_PROVIDER_ENABLED`): when enabled, a routing engine (`app/routing/`) selects a target model/provider per request (rule/cost/quality/smart routing), a key pool (`app/keypool/`) rotates encrypted provider keys with rate-limit cooldown + cross-model failover, and `app/compression/` optionally compresses agent context. All flags default off (except `FAILOVER_ENABLED`/`CACHE_AWARE_ROUTING_ENABLED`) — zero impact when `MULTI_PROVIDER_ENABLED=False`. See [docs/smart-routing-guide.md](docs/smart-routing-guide.md).
 
 > **Detailed conversion flows, content block mapping, and streaming implementation**: see [docs/architecture/detailed-flows.md](docs/architecture/detailed-flows.md)
 
@@ -59,6 +61,13 @@ All config in `app/core/config.py` (Pydantic Settings, loads from env vars / `.e
 | `anthropic-proxy-usage-stats` | Aggregated token counts |
 | `anthropic-proxy-model-pricing` | Model pricing data |
 | `anthropic-proxy-model-mapping` | Anthropic → Bedrock model ID mapping |
+| `anthropic-proxy-beta-headers` | Anthropic → Bedrock beta header mappings |
+| `anthropic-proxy-response-context` | OpenAI Responses API passthrough context store |
+| `anthropic-proxy-providers` | Multi-provider: Bedrock account/provider definitions |
+| `anthropic-proxy-provider-keys` | Multi-provider: encrypted provider API keys (key pool) |
+| `anthropic-proxy-routing-rules` | Multi-provider: routing rules |
+| `anthropic-proxy-failover-chains` | Multi-provider: cross-model failover chains |
+| `anthropic-proxy-smart-routing-config` | Multi-provider: RouteLLM smart-routing config |
 
 > **Full schema, budget computation, and aggregation details**: see [docs/architecture/detailed-flows.md](docs/architecture/detailed-flows.md)
 
@@ -66,16 +75,19 @@ All config in `app/core/config.py` (Pydantic Settings, loads from env vars / `.e
 
 ```
 app/
-├── api/              # Route handlers (thin, delegates to services)
-├── converters/       # Core Anthropic↔Bedrock conversion logic
-├── core/             # Configuration, logging, metrics
-├── db/               # DynamoDB client and managers
+├── api/              # Route handlers (thin); includes openai_passthrough/ subpackage
+├── converters/       # Anthropic↔Bedrock + Anthropic↔OpenAI conversion logic
+├── core/             # Configuration, logging, metrics, security_validator
+├── db/               # DynamoDB client and managers (incl. provider_manager, beta_header_cache)
 ├── middleware/       # Auth and rate limiting
-├── schemas/          # Pydantic models (anthropic.py, bedrock.py, web_search.py, web_fetch.py, ptc.py)
-├── services/         # Business logic, Bedrock calls, PTC, web search/fetch
+├── schemas/          # Pydantic models (anthropic.py, bedrock.py, provider.py, web_search.py, web_fetch.py, ptc.py)
+├── services/         # Business logic, Bedrock calls, provider abstraction; ptc/ web_search/ web_fetch/ subpackages
+├── routing/          # Multi-provider routing engine (rule/cost/quality/smart)
+├── keypool/          # Multi-provider API-key pool: rotation, failover, encryption
+├── compression/      # Agent context compression
 └── tracing/          # OpenTelemetry distributed tracing
 admin_portal/
-├── backend/          # Separate FastAPI app (auth, api_keys, pricing, dashboard, model_mapping)
+├── backend/          # Separate FastAPI app (auth, dashboard, keys, pricing, model_mapping, providers, provider_keys, routing, failover, beta_headers)
 └── frontend/         # Static frontend (served at /admin/ in production)
 ```
 
@@ -91,12 +103,16 @@ admin_portal/
 8. `app/services/web_fetch_service.py` — Web fetch agentic loop
 9. `app/tracing/provider.py` — OpenTelemetry provider
 10. `admin_portal/backend/main.py` — Admin portal backend
+11. `app/services/standalone_code_execution_service.py` — Standalone code execution (Docker sandbox)
+12. `app/routing/engine.py` — Multi-provider routing engine
+13. `app/services/provider_registry.py` — Provider abstraction / registry
 
 ## Features
 
 Each feature has detailed docs in [docs/architecture/features.md](docs/architecture/features.md):
 
 - **Programmatic Tool Calling (PTC)**: Docker sandbox code execution with client-side tool calls. Requires Docker + EC2 launch type on ECS.
+- **Standalone Code Execution**: Proxy-side `code_execution` tool (`code-execution-2025-08-25` beta, without `allowed_callers`) run in a Docker sandbox via agentic loop. Controlled by `ENABLE_STANDALONE_CODE_EXECUTION`.
 - **Web Search**: Proxy-side `web_search_20250305`/`web_search_20260209` via Tavily or Brave. Agentic loop (up to 25 iterations).
 - **Web Fetch**: Proxy-side `web_fetch_20250910`/`web_fetch_20260209` via httpx (no API key needed).
 - **Image URL Sources**: `ImageContent.source` accepts `type: "url"` (Anthropic-native shape). Proxy fetches concurrently via httpx and replaces with base64 before forwarding to Bedrock. Also accepts OpenAI-style `{"type":"image_url","image_url":{"url":...}}` blocks (both http(s) and `data:` URLs) on `/v1/messages` — coerced to native shape at validation time. Configurable timeout/size cap; no allowlist (relies on network policy).
@@ -107,6 +123,7 @@ Each feature has detailed docs in [docs/architecture/features.md](docs/architect
 - **Admin Portal**: Separate FastAPI app for API key/usage/pricing management with Cognito auth.
 - **OpenAI-Compatible API**: Non-Claude models can optionally use Bedrock's OpenAI Chat Completions API via bedrock-mantle endpoint instead of Converse API. Controlled by `ENABLE_OPENAI_COMPAT` flag. Maps `thinking` to OpenAI `reasoning` with configurable effort thresholds.
 - **OpenAI Passthrough**: New `/openai/v1/*` endpoints accept OpenAI-native Chat Completions and Responses API requests and forward them to bedrock-mantle. Distinct from `ENABLE_OPENAI_COMPAT` (which routes Anthropic-format requests on `/v1/messages`). Reuses proxy API key auth, rate limits, budgets, and usage tracking. Controlled by `ENABLE_OPENAI_PASSTHROUGH`.
+- **Multi-Provider Gateway**: Optional gateway layer for multiple Bedrock accounts/providers — routing engine (rule/cost/quality/RouteLLM smart routing), encrypted key pool with rotation + cross-model failover, and context compression. Managed via admin portal (`providers`, `provider_keys`, `routing`, `failover`). Controlled by `MULTI_PROVIDER_ENABLED` and sub-flags. See [docs/smart-routing-guide.md](docs/smart-routing-guide.md).
 
 ## Common Development Tasks
 
@@ -165,11 +182,13 @@ Key CDK files: `cdk/config/config.ts`, `cdk/lib/ecs-stack.ts`, `cdk/scripts/depl
 - `AWS_REGION` — AWS region for Bedrock and DynamoDB
 - `MASTER_API_KEY` — Master key for admin access (or `REQUIRE_API_KEY=False` for dev)
 
-**Feature Flags:** `ENABLE_TOOL_USE`, `ENABLE_EXTENDED_THINKING`, `ENABLE_DOCUMENT_SUPPORT`, `ENABLE_PROGRAMMATIC_TOOL_CALLING`, `ENABLE_WEB_SEARCH`, `ENABLE_WEB_FETCH`, `ENABLE_TRACING`
+**Feature Flags:** `ENABLE_TOOL_USE`, `ENABLE_EXTENDED_THINKING`, `ENABLE_DOCUMENT_SUPPORT`, `ENABLE_PROGRAMMATIC_TOOL_CALLING`, `ENABLE_STANDALONE_CODE_EXECUTION`, `ENABLE_WEB_SEARCH`, `ENABLE_WEB_FETCH`, `ENABLE_TRACING`
 
-**OpenAI-Compat:** `ENABLE_OPENAI_COMPAT`, `BEDROCK_API_KEY`, `MANTLE_ENDPOINT_URL`, `OPENAI_COMPAT_THINKING_HIGH_THRESHOLD`, `OPENAI_COMPAT_THINKING_MEDIUM_THRESHOLD`
+**OpenAI-Compat:** `ENABLE_OPENAI_COMPAT`, `ENABLE_OPENAI_PASSTHROUGH`, `BEDROCK_API_KEY`, `MANTLE_ENDPOINT_URL`, `OPENAI_COMPAT_THINKING_HIGH_THRESHOLD`, `OPENAI_COMPAT_THINKING_MEDIUM_THRESHOLD`
 
-See `.env.example` for full list including PTC, web search, web fetch, cache TTL, tracing, and beta header settings.
+**Multi-Provider Gateway:** `MULTI_PROVIDER_ENABLED`, `ROUTING_ENABLED`, `SMART_ROUTING_ENABLED`, `FAILOVER_ENABLED`, `COMPRESSION_ENABLED`, `CACHE_AWARE_ROUTING_ENABLED`, `PROVIDER_KEY_ENCRYPTION_SECRET`
+
+See `.env.example` for full list including PTC, web search, web fetch, cache TTL, tracing, beta header, and multi-provider settings.
 
 ## API Compatibility
 
