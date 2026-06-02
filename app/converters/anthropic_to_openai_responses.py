@@ -204,15 +204,20 @@ class AnthropicToOpenAIResponsesConverter:
         """Convert Anthropic Tool definitions to Responses function tools."""
         openai_tools: list[dict[str, Any]] = []
         for tool in tools:
+            # Tools may be pydantic Tool objects OR raw dicts (the web-search
+            # agentic loop passes dicts). Normalize to a dict first.
+            td = tool.model_dump() if hasattr(tool, "model_dump") else (
+                tool if isinstance(tool, dict) else {}
+            )
             # Default name/description to "" — mantle rejects null values.
-            name = getattr(tool, "name", "") or ""
-            description = getattr(tool, "description", "") or ""
-            input_schema = getattr(tool, "input_schema", None)
+            name = td.get("name") or ""
+            description = td.get("description") or ""
+            input_schema = td.get("input_schema")
 
-            if input_schema is not None and hasattr(input_schema, "model_dump"):
-                parameters = input_schema.model_dump(exclude_none=True)
-            elif isinstance(input_schema, dict):
+            if isinstance(input_schema, dict):
                 parameters = input_schema
+            elif input_schema is not None and hasattr(input_schema, "model_dump"):
+                parameters = input_schema.model_dump(exclude_none=True)
             else:
                 parameters = {}
 

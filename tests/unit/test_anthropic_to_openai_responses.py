@@ -182,6 +182,43 @@ def test_tools_conversion():
     ]
 
 
+def test_tools_conversion_raw_dict():
+    # The web-search agentic loop passes tools as raw dicts, not Tool objects.
+    tool_dict = {
+        "name": "web_search",
+        "description": "Search the web for information.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query."}
+            },
+            "required": ["query"],
+        },
+    }
+    request = MessageRequest(
+        model="openai.gpt-5.5",
+        max_tokens=512,
+        tools=[tool_dict],
+        messages=[Message(role="user", content="hi")],
+    )
+    result = _converter().convert_request(request)
+
+    assert result["tools"] == [
+        {
+            "type": "function",
+            "name": "web_search",
+            "description": "Search the web for information.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query."}
+                },
+                "required": ["query"],
+            },
+        }
+    ]
+
+
 def test_tool_choice_auto():
     request = MessageRequest(
         model="openai.gpt-5.5",
