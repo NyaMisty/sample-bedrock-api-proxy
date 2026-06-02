@@ -12,7 +12,7 @@ request is always stateless (``store=False``) and the full conversation is
 re-rendered into the ``input`` array on every call.
 """
 import json
-from typing import Any, Dict, List
+from typing import Any
 
 from app.schemas.anthropic import (
     Message,
@@ -27,7 +27,7 @@ from app.schemas.anthropic import (
 class AnthropicToOpenAIResponsesConverter:
     """Converts Anthropic Messages API format to OpenAI Responses API format."""
 
-    def convert_request(self, request: MessageRequest) -> Dict[str, Any]:
+    def convert_request(self, request: MessageRequest) -> dict[str, Any]:
         """Convert an Anthropic MessageRequest to OpenAI Responses API kwargs.
 
         Args:
@@ -36,7 +36,7 @@ class AnthropicToOpenAIResponsesConverter:
         Returns:
             Dictionary suitable for ``client.responses.create(**kwargs)``.
         """
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "model": request.model,
             # Proxy maintains conversation state itself; never persist server-side.
             "store": False,
@@ -50,7 +50,7 @@ class AnthropicToOpenAIResponsesConverter:
                 result["instructions"] = instructions
 
         # Conversation messages → input array
-        input_items: List[Dict[str, Any]] = []
+        input_items: list[dict[str, Any]] = []
         for msg in request.messages:
             input_items.extend(self._convert_message(msg))
         result["input"] = input_items
@@ -78,7 +78,7 @@ class AnthropicToOpenAIResponsesConverter:
         if isinstance(system, str):
             return system
         if isinstance(system, list):
-            texts: List[str] = []
+            texts: list[str] = []
             for block in system:
                 if isinstance(block, SystemMessage):
                     texts.append(block.text)
@@ -87,7 +87,7 @@ class AnthropicToOpenAIResponsesConverter:
             return "\n".join(texts)
         return ""
 
-    def _convert_message(self, message: Message) -> List[Dict[str, Any]]:
+    def _convert_message(self, message: Message) -> list[dict[str, Any]]:
         """Convert a single Anthropic message into Responses input items.
 
         A plain-string message becomes a single role item. A message with
@@ -103,8 +103,8 @@ class AnthropicToOpenAIResponsesConverter:
         if not isinstance(content, list):
             return [{"role": role, "content": str(content)}]
 
-        items: List[Dict[str, Any]] = []
-        text_parts: List[str] = []
+        items: list[dict[str, Any]] = []
+        text_parts: list[str] = []
 
         def flush_text() -> None:
             if text_parts:
@@ -152,7 +152,7 @@ class AnthropicToOpenAIResponsesConverter:
         flush_text()
         return items
 
-    def _convert_tool_result(self, block: Any) -> Dict[str, Any]:
+    def _convert_tool_result(self, block: Any) -> dict[str, Any]:
         """Convert a tool_result block into a function_call_output item."""
         if isinstance(block, ToolResultContent):
             call_id = block.tool_use_id
@@ -164,7 +164,7 @@ class AnthropicToOpenAIResponsesConverter:
         if isinstance(content, str):
             output = content
         elif isinstance(content, list):
-            parts: List[str] = []
+            parts: list[str] = []
             has_text = False
             for item in content:
                 if isinstance(item, TextContent):
@@ -200,9 +200,9 @@ class AnthropicToOpenAIResponsesConverter:
         except (TypeError, ValueError):
             return str(content)
 
-    def _convert_tools(self, tools: List[Any]) -> List[Dict[str, Any]]:
+    def _convert_tools(self, tools: list[Any]) -> list[dict[str, Any]]:
         """Convert Anthropic Tool definitions to Responses function tools."""
-        openai_tools: List[Dict[str, Any]] = []
+        openai_tools: list[dict[str, Any]] = []
         for tool in tools:
             # Default name/description to "" — mantle rejects null values.
             name = getattr(tool, "name", "") or ""
