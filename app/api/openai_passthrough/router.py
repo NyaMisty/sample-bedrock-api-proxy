@@ -213,6 +213,10 @@ async def responses_create(
     if is_responses_web_search_request(body):
         request_id = f"resp-{uuid4().hex}"
         service_tier = api_key_info.get("service_tier", "default")
+        # Capture the per-key provider creds before `api_key` is reassigned to
+        # the proxy key (used for context_store). The web-search agentic loop's
+        # model calls must hit the provider endpoint, not the global default.
+        provider_base_url, provider_api_key = base_url, api_key
         api_key = api_key_info.get("api_key", "")
         previous_messages = None
         previous_response_id = body.get("previous_response_id")
@@ -257,7 +261,11 @@ async def responses_create(
 
         try:
             web_search_service = get_web_search_service()
-            bedrock_service = BedrockService()
+            bedrock_service = BedrockService(
+                openai_base_url=provider_base_url,
+                openai_api_key=provider_api_key,
+                openai_use_responses=True,
+            )
         except Exception as exc:
             return _api_error_response(exc)
 
