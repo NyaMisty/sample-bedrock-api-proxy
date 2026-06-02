@@ -162,7 +162,11 @@ class BedrockService:
                 base_url=openai_base_url,
                 api_key=openai_api_key,
             )
-            print(f"[BEDROCK] OpenAI-compat mode enabled, base_url={openai_base_url or settings.openai_base_url}, responses={openai_use_responses}")
+            endpoint_source = "override" if openai_base_url else "settings"
+            print(
+                f"[BEDROCK] OpenAI-compat mode enabled, "
+                f"endpoint={endpoint_source}, responses={openai_use_responses}"
+            )
 
     def _is_claude_model(self, model_id: str) -> bool:
         """

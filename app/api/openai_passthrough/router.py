@@ -102,9 +102,9 @@ def _resolve_upstream_target(
         return base_url, api_key
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
-            "[OPENAI-PASSTHROUGH] provider %s resolution failed, using default: %s",
+            "[OPENAI-PASSTHROUGH] provider %s resolution failed (%s), using default",
             provider_id,
-            exc,
+            type(exc).__name__,
         )
         return None, None
 

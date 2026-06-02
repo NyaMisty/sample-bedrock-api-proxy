@@ -93,7 +93,8 @@ class OpenAICompatService:
         self.response_converter = OpenAIToAnthropicConverter()
         self.responses_request_converter = AnthropicToOpenAIResponsesConverter()
         self.responses_response_converter = OpenAIResponsesToAnthropicConverter()
-        print(f"[OPENAI-COMPAT] Initialized with base_url={resolved_base_url}")
+        endpoint_source = "override" if base_url else "settings"
+        print(f"[OPENAI-COMPAT] Initialized with endpoint={endpoint_source}")
 
     def invoke_model_sync(
         self, request: MessageRequest, request_id: Optional[str] = None
