@@ -18,6 +18,7 @@ tuple BEFORE FastAPI has committed any response headers. If the upstream
 returns a non-2xx status, the caller can hand back a JSONResponse with the
 real upstream status code instead of a fake 200 streaming response.
 """
+
 from __future__ import annotations
 
 import json
@@ -33,12 +34,24 @@ from app.api.openai_passthrough.usage_extractor import try_extract_usage_from_ss
 logger = logging.getLogger(__name__)
 
 
+def _log_json(value: Any) -> str:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+    except (TypeError, ValueError):
+        return repr(value)
+
+
 def _extract_event_type(raw_line: str) -> str | None:
     """Return the ``type`` field from a ``data:`` JSON frame, or None if not parseable."""
     line = raw_line.strip()
     if not line.startswith("data:"):
         return None
-    payload = line[len("data:"):].strip()
+    payload = line[len("data:") :].strip()
     if not payload or payload == "[DONE]":
         return None
     try:
@@ -101,7 +114,9 @@ async def open_upstream_stream(
             exc_type=type(exc).__name__,
         ) from exc
     except httpx.RequestError as exc:
-        logger.error("[OPENAI-PASSTHROUGH] upstream connection error opening stream: %s", exc)
+        logger.error(
+            "[OPENAI-PASSTHROUGH] upstream connection error opening stream: %s", exc
+        )
         raise UpstreamConnectionError(
             status_code=502,
             message=f"upstream connection failed: {exc}",
@@ -131,13 +146,23 @@ async def stream_passthrough_response(
 
     try:
         async for raw_line in resp.aiter_lines():
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(
+                    "[OPENAI-PASSTHROUGH] upstream stream chunk %s",
+                    _log_json(
+                        {
+                            "api_surface": api_surface,
+                            "line": raw_line,
+                        }
+                    ),
+                )
             # For the Responses API, prepend an ``event: <type>`` line whenever
             # we see a data frame whose JSON carries a ``type`` field. This
             # restores the OpenAI-spec SSE format that strict clients expect.
             if synthesize_event_lines:
                 event_type = _extract_event_type(raw_line)
                 if event_type is not None:
-                    yield f"event: {event_type}\n".encode("utf-8")
+                    yield f"event: {event_type}\n".encode()
 
             # Upstream gives us SSE lines without trailing newlines; restore the
             # framing byte so the SSE body is well-formed for the downstream client.
@@ -176,6 +201,7 @@ async def stream_passthrough_response(
 # level (legacy code path; new code should use open_upstream_stream +
 # stream_passthrough_response so non-2xx errors come back as a real JSONResponse).
 # ---------------------------------------------------------------------------
+
 
 async def stream_passthrough(
     method: str,

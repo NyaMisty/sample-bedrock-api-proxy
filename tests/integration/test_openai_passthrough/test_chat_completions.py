@@ -1,6 +1,7 @@
 """Integration tests for POST /openai/v1/chat/completions."""
 
 import json
+import logging
 
 import httpx
 
@@ -49,6 +50,46 @@ def test_non_streaming_chat_completions_forwards_and_logs_usage(
     assert kwargs["output_tokens"] == 5
     assert kwargs["api_surface"] == "chat_completions"
     assert kwargs["model"] == "openai.gpt-oss-120b"
+
+
+def test_non_streaming_chat_completions_info_logs_input_and_output(
+    client, respx_mock, caplog
+):
+    caplog.set_level(logging.INFO, logger="app.api.openai_passthrough.router")
+    upstream_resp = {
+        "id": "chatcmpl-info",
+        "object": "chat.completion",
+        "model": "openai.gpt-oss-120b",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "info answer"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+    respx_mock.post("/chat/completions").mock(
+        return_value=httpx.Response(200, json=upstream_resp)
+    )
+
+    r = client.post(
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "openai.gpt-oss-120b",
+            "messages": [{"role": "user", "content": "info input"}],
+        },
+    )
+
+    assert r.status_code == 200
+    info_logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "[OPENAI-PASSTHROUGH] upstream request" in info_logs
+    assert '"path":"/chat/completions"' in info_logs
+    assert '"content":"info input"' in info_logs
+    assert "[OPENAI-PASSTHROUGH] upstream response" in info_logs
+    assert '"status_code":200' in info_logs
+    assert '"content":"info answer"' in info_logs
 
 
 def test_model_mapping_is_applied(client, respx_mock, mock_model_mapping_manager):
@@ -189,6 +230,42 @@ def test_streaming_chat_completions_forwards_sse_and_records_usage(
     assert kw["input_tokens"] == 7
     assert kw["output_tokens"] == 2
     assert kw["api_surface"] == "chat_completions"
+
+
+def test_streaming_chat_completions_info_logs_input_and_output_chunks(
+    client, respx_mock, caplog
+):
+    caplog.set_level(logging.INFO, logger="app.api.openai_passthrough.router")
+    caplog.set_level(logging.INFO, logger="app.api.openai_passthrough.streaming")
+    sse_lines = [
+        'data: {"id":"x","choices":[{"index":0,"delta":{"content":"info stream"}}]}',
+        "data: [DONE]",
+    ]
+    body = "\n".join(sse_lines).encode()
+    respx_mock.post("/chat/completions").mock(
+        return_value=httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=body
+        )
+    )
+
+    with client.stream(
+        "POST",
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "m",
+            "messages": [{"role": "user", "content": "info stream input"}],
+            "stream": True,
+        },
+    ) as r:
+        list(r.iter_bytes())
+
+    info_logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "[OPENAI-PASSTHROUGH] upstream request" in info_logs
+    assert '"path":"/chat/completions"' in info_logs
+    assert '"content":"info stream input"' in info_logs
+    assert "[OPENAI-PASSTHROUGH] upstream stream chunk" in info_logs
+    assert "info stream" in info_logs
 
 
 def test_streaming_chat_completions_without_include_usage_does_not_log(
