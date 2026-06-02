@@ -100,12 +100,8 @@ def _resolve_upstream_target(
             creds = mgr.get_decrypted_credentials(provider_id) or {}
             api_key = creds.get("bearer_token") or None
         return base_url, api_key
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning(
-            "[OPENAI-PASSTHROUGH] provider %s resolution failed (%s), using default",
-            provider_id,
-            type(exc).__name__,
-        )
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("[OPENAI-PASSTHROUGH] provider resolution failed, using default")
         return None, None
 
 

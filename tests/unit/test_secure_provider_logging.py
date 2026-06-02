@@ -15,7 +15,9 @@ def test_openai_passthrough_provider_resolution_does_not_log_exception_secret(
 
     monkeypatch.setattr(router, "_provider_manager", lambda: FailingProviderManager())
 
-    base_url, api_key = router._resolve_upstream_target({"provider_id": "provider-1"})
+    provider_id = f"provider-{secret}"
+
+    base_url, api_key = router._resolve_upstream_target({"provider_id": provider_id})
 
     assert (base_url, api_key) == (None, None)
     assert secret not in caplog.text
