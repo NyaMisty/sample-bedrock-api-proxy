@@ -144,6 +144,7 @@ def client(
     _router_module._mapping = None
     _router_module._usage = None
     _router_module._context_store = None
+    _router_module._provider = None
 
     with patch(
         "app.api.openai_passthrough.router.DynamoDBClient", return_value=MagicMock()
