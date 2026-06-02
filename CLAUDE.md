@@ -1,7 +1,3 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
 **Anthropic-Bedrock API Proxy** — a FastAPI service that translates between the Anthropic Messages API format and AWS Bedrock's APIs. Clients using the Anthropic Python SDK can seamlessly access any Bedrock model.

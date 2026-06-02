@@ -93,11 +93,26 @@ class BedrockService:
     synchronous boto3 calls, ensuring health checks remain responsive.
     """
 
-    def __init__(self, dynamodb_client=None):
+    def __init__(
+        self,
+        dynamodb_client=None,
+        openai_base_url: str | None = None,
+        openai_api_key: str | None = None,
+        openai_use_responses: bool = False,
+    ):
         """Initialize Bedrock service.
 
         Args:
             dynamodb_client: Optional DynamoDB client for custom model mappings
+            openai_base_url: Optional per-request/provider override for the
+                OpenAI-compat endpoint. When supplied with ``openai_api_key``,
+                enables the compat service even if the global compat settings
+                are not configured.
+            openai_api_key: Optional per-request/provider override API key for
+                the OpenAI-compat endpoint.
+            openai_use_responses: When True, non-Claude models are dispatched to
+                the OpenAI Responses API (``invoke_responses``) instead of the
+                Chat Completions API (``invoke_model``).
         """
         # Configure boto3 with timeout settings
         # Using standard retry mode instead of adaptive to avoid long backoff delays
@@ -132,12 +147,26 @@ class BedrockService:
         self._provider_client_ttl = 300  # 5 minutes
         self._provider_manager = None  # Lazy-loaded
 
-        # Initialize OpenAI-compat service for non-Claude models if enabled
+        # Initialize OpenAI-compat service for non-Claude models if enabled.
+        # When a provider override endpoint+key is supplied we enable the compat
+        # service even if the GLOBAL settings.openai_api_key is empty — the
+        # provider supplies the key. OpenAICompatService(base_url=None,
+        # api_key=None) falls back to globals, preserving existing behavior.
+        self._openai_use_responses = openai_use_responses
         self._openai_compat_service = None
-        if settings.enable_openai_compat and settings.openai_api_key and settings.openai_base_url:
+        use_global = settings.enable_openai_compat and settings.openai_api_key and settings.openai_base_url
+        use_override = bool(openai_base_url and openai_api_key)
+        if use_global or use_override:
             from app.services.openai_compat_service import OpenAICompatService
-            self._openai_compat_service = OpenAICompatService()
-            print(f"[BEDROCK] OpenAI-compat mode enabled, base_url={settings.openai_base_url}")
+            self._openai_compat_service = OpenAICompatService(
+                base_url=openai_base_url,
+                api_key=openai_api_key,
+            )
+            endpoint_source = "override" if openai_base_url else "settings"
+            print(
+                f"[BEDROCK] OpenAI-compat mode enabled, "
+                f"endpoint={endpoint_source}, responses={openai_use_responses}"
+            )
 
     def _is_claude_model(self, model_id: str) -> bool:
         """
@@ -650,6 +679,8 @@ class BedrockService:
         # Route non-Claude models to OpenAI-compat BEFORE acquiring Bedrock semaphore
         # (OpenAI-compat service manages its own semaphore)
         if not self._is_claude_model(request.model) and self._openai_compat_service:
+            if self._openai_use_responses:
+                return await self._openai_compat_service.invoke_responses(request, request_id)
             return await self._openai_compat_service.invoke_model(request, request_id)
 
         semaphore = _get_semaphore()

@@ -40,27 +40,38 @@ def reset_client_for_testing() -> None:
         _client = None
 
 
-def upstream_url(path: str) -> str:
+def upstream_url(path: str, base_url: str | None = None) -> str:
     """Build a full upstream URL by appending ``path`` to the Mantle endpoint.
 
     Avoids httpx's RFC 3986 path-replacement behaviour by always producing a
     fully-qualified URL.
+
+    ``base_url`` overrides the global ``settings.openai_base_url`` — used to
+    honour a per-API-key provider's ``endpoint_url``. Falls back to the global
+    default when ``None``.
 
     Examples:
         MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-west-2.api.aws/v1
         upstream_url("/chat/completions")  -> https://bedrock-mantle.us-west-2.api.aws/v1/chat/completions
         upstream_url("models")             -> https://bedrock-mantle.us-west-2.api.aws/v1/models
     """
-    base = settings.openai_base_url.rstrip("/")
+    base = (base_url or settings.openai_base_url).rstrip("/")
     if not path.startswith("/"):
         path = "/" + path
     return base + path
 
 
-def upstream_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Build the Authorization + standard headers for an upstream call."""
+def upstream_headers(
+    extra: dict[str, str] | None = None, api_key: str | None = None
+) -> dict[str, str]:
+    """Build the Authorization + standard headers for an upstream call.
+
+    ``api_key`` overrides the global ``settings.openai_api_key`` — used to
+    authenticate against a per-API-key provider's endpoint with that provider's
+    own credential. Falls back to the global default when ``None``.
+    """
     headers = {
-        "Authorization": f"Bearer {settings.openai_api_key}",
+        "Authorization": f"Bearer {api_key or settings.openai_api_key}",
         "Content-Type": "application/json",
         "User-Agent": "bedrock-api-proxy/openai-passthrough",
     }

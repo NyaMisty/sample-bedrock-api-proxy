@@ -70,6 +70,8 @@ async def open_upstream_stream(
     path: str,
     body: dict[str, Any] | None,
     extra_headers: dict[str, str] | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
 ) -> tuple[httpx.Response, bytes | None]:
     """Open an upstream streaming request and peek at the status code.
 
@@ -85,8 +87,10 @@ async def open_upstream_stream(
     JSON 502/504 with the carried status code.
     """
     client = get_client()
-    headers = upstream_headers(extra_headers)
-    req = client.build_request(method, upstream_url(path), json=body, headers=headers)
+    headers = upstream_headers(extra_headers, api_key=api_key)
+    req = client.build_request(
+        method, upstream_url(path, base_url=base_url), json=body, headers=headers
+    )
     try:
         resp = await client.send(req, stream=True)
     except httpx.TimeoutException as exc:

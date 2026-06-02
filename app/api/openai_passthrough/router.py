@@ -34,7 +34,9 @@ from app.api.openai_passthrough.web_search import (
     is_responses_web_search_request,
     stream_response_events,
 )
+from app.core.config import settings
 from app.db.dynamodb import DynamoDBClient, ModelMappingManager, UsageTracker
+from app.db.provider_manager import ProviderManager
 from app.middleware.auth import get_api_key_info
 from app.services.bedrock_service import BedrockService
 from app.services.web_search_service import get_web_search_service
@@ -46,6 +48,7 @@ _ddb: DynamoDBClient | None = None
 _mapping: ModelMappingManager | None = None
 _usage: UsageTracker | None = None
 _context_store: Any | None = None
+_provider: ProviderManager | None = None
 
 
 def _managers() -> tuple[ModelMappingManager, UsageTracker, Any]:
@@ -57,6 +60,49 @@ def _managers() -> tuple[ModelMappingManager, UsageTracker, Any]:
         _usage = UsageTracker(_ddb)
         _context_store = get_response_context_store(_ddb)
     return _mapping, _usage, _context_store
+
+
+def _provider_manager() -> ProviderManager:
+    """Lazily build the ProviderManager used to resolve per-key endpoints."""
+    global _ddb, _provider
+    if _provider is None:
+        if _ddb is None:
+            _ddb = DynamoDBClient()
+        _provider = ProviderManager(
+            dynamodb_resource=_ddb.dynamodb,
+            table_name=settings.dynamodb_providers_table,
+            encryption_secret=settings.provider_key_encryption_secret or "",
+        )
+    return _provider
+
+
+def _resolve_upstream_target(
+    api_key_info: dict[str, Any] | None,
+) -> tuple[str | None, str | None]:
+    """Resolve the upstream (base_url, api_key) for this request.
+
+    When the API key is associated with a provider (``provider_id``), the
+    provider's ``endpoint_url`` and credential override the global Mantle
+    defaults. Returns ``(None, None)`` overrides — meaning "use global
+    defaults" — when no active provider is configured.
+    """
+    provider_id = api_key_info.get("provider_id") if api_key_info else None
+    if not provider_id:
+        return None, None
+    try:
+        mgr = _provider_manager()
+        provider = mgr.get_provider(provider_id)
+        if not provider or not provider.get("is_active", True):
+            return None, None
+        base_url = provider.get("endpoint_url") or None
+        api_key = None
+        if provider.get("auth_type") == "bearer_token":
+            creds = mgr.get_decrypted_credentials(provider_id) or {}
+            api_key = creds.get("bearer_token") or None
+        return base_url, api_key
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("[OPENAI-PASSTHROUGH] provider resolution failed, using default")
+        return None, None
 
 
 def _record_usage(
@@ -108,11 +154,13 @@ async def chat_completions(
     mapping, _, _ = _managers()
     body["model"] = resolve_model_id(body.get("model", ""), mapping)
     extra = _passthrough_extra_headers(request)
+    base_url, api_key = _resolve_upstream_target(api_key_info)
 
     if body.get("stream"):
         try:
             upstream_resp, error_body = await open_upstream_stream(
-                "POST", "/chat/completions", body, extra
+                "POST", "/chat/completions", body, extra,
+                base_url=base_url, api_key=api_key,
             )
         except UpstreamConnectionError as exc:
             return JSONResponse(
@@ -134,7 +182,9 @@ async def chat_completions(
         )
 
     resp = await get_client().post(
-        upstream_url("/chat/completions"), json=body, headers=upstream_headers(extra)
+        upstream_url("/chat/completions", base_url=base_url),
+        json=body,
+        headers=upstream_headers(extra, api_key=api_key),
     )
     if resp.status_code >= 400:
         return JSONResponse(_safe_json(resp), status_code=resp.status_code)
@@ -154,10 +204,15 @@ async def responses_create(
     mapping, _, context_store = _managers()
     body["model"] = resolve_model_id(body.get("model", ""), mapping)
     extra = _passthrough_extra_headers(request)
+    base_url, api_key = _resolve_upstream_target(api_key_info)
 
     if is_responses_web_search_request(body):
         request_id = f"resp-{uuid4().hex}"
         service_tier = api_key_info.get("service_tier", "default")
+        # Capture the per-key provider creds before `api_key` is reassigned to
+        # the proxy key (used for context_store). The web-search agentic loop's
+        # model calls must hit the provider endpoint, not the global default.
+        provider_base_url, provider_api_key = base_url, api_key
         api_key = api_key_info.get("api_key", "")
         previous_messages = None
         previous_response_id = body.get("previous_response_id")
@@ -202,7 +257,11 @@ async def responses_create(
 
         try:
             web_search_service = get_web_search_service()
-            bedrock_service = BedrockService()
+            bedrock_service = BedrockService(
+                openai_base_url=provider_base_url,
+                openai_api_key=provider_api_key,
+                openai_use_responses=True,
+            )
         except Exception as exc:
             return _api_error_response(exc)
 
@@ -281,7 +340,8 @@ async def responses_create(
     if body.get("stream"):
         try:
             upstream_resp, error_body = await open_upstream_stream(
-                "POST", "/responses", body, extra
+                "POST", "/responses", body, extra,
+                base_url=base_url, api_key=api_key,
             )
         except UpstreamConnectionError as exc:
             return JSONResponse(
@@ -303,7 +363,9 @@ async def responses_create(
         )
 
     resp = await get_client().post(
-        upstream_url("/responses"), json=body, headers=upstream_headers(extra)
+        upstream_url("/responses", base_url=base_url),
+        json=body,
+        headers=upstream_headers(extra, api_key=api_key),
     )
     if resp.status_code >= 400:
         return JSONResponse(_safe_json(resp), status_code=resp.status_code)
@@ -314,9 +376,12 @@ async def responses_create(
     return JSONResponse(data, status_code=resp.status_code)
 
 
-async def _passthrough_request(request: Request, path: str) -> Response:
+async def _passthrough_request(
+    request: Request, path: str, api_key_info: dict[str, Any] | None = None
+) -> Response:
     """Forward request to upstream and mirror the upstream response."""
     extra = _passthrough_extra_headers(request)
+    base_url, api_key = _resolve_upstream_target(api_key_info)
     body = None
     if request.method in ("POST", "PUT", "PATCH"):
         try:
@@ -324,7 +389,10 @@ async def _passthrough_request(request: Request, path: str) -> Response:
         except Exception:
             body = None
     resp = await get_client().request(
-        request.method, upstream_url(path), json=body, headers=upstream_headers(extra)
+        request.method,
+        upstream_url(path, base_url=base_url),
+        json=body,
+        headers=upstream_headers(extra, api_key=api_key),
     )
     return Response(
         content=resp.content,
@@ -337,35 +405,41 @@ async def _passthrough_request(request: Request, path: str) -> Response:
 async def responses_get_or_delete(
     response_id: str,
     request: Request,
-    _: dict[str, Any] = Depends(get_api_key_info),
+    api_key_info: dict[str, Any] = Depends(get_api_key_info),
 ):
-    return await _passthrough_request(request, f"/responses/{response_id}")
+    return await _passthrough_request(
+        request, f"/responses/{response_id}", api_key_info
+    )
 
 
 @router.post("/responses/{response_id}/cancel")
 async def responses_cancel(
     response_id: str,
     request: Request,
-    _: dict[str, Any] = Depends(get_api_key_info),
+    api_key_info: dict[str, Any] = Depends(get_api_key_info),
 ):
-    return await _passthrough_request(request, f"/responses/{response_id}/cancel")
+    return await _passthrough_request(
+        request, f"/responses/{response_id}/cancel", api_key_info
+    )
 
 
 @router.get("/responses/{response_id}/input_items")
 async def responses_input_items(
     response_id: str,
     request: Request,
-    _: dict[str, Any] = Depends(get_api_key_info),
+    api_key_info: dict[str, Any] = Depends(get_api_key_info),
 ):
-    return await _passthrough_request(request, f"/responses/{response_id}/input_items")
+    return await _passthrough_request(
+        request, f"/responses/{response_id}/input_items", api_key_info
+    )
 
 
 @router.get("/models")
 async def list_models(
     request: Request,
-    _: dict[str, Any] = Depends(get_api_key_info),
+    api_key_info: dict[str, Any] = Depends(get_api_key_info),
 ):
-    return await _passthrough_request(request, "/models")
+    return await _passthrough_request(request, "/models", api_key_info)
 
 
 def _safe_json(resp) -> dict[str, Any]:

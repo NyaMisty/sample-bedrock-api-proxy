@@ -268,6 +268,39 @@ curl http://localhost:8000/v1/models -H "x-api-key: sk-xxx"
 
 需要在代理端启用 `ENABLE_OPENAI_PASSTHROUGH=True`。将 OpenAI SDK 的 `base_url` 指向 `<代理地址>/openai/v1`，并使用 **代理的 API Key**——代理会自动注入上游 Bedrock 凭证。Bedrock 原生模型 ID（如 `openai.gpt-oss-120b`）直接透传；Anthropic 风格的别名通过模型映射表解析。
 
+#### Codex CLI / IDE
+
+Codex 可以把该代理配置为自定义 Responses API 模型提供方。请把 provider 配置写在用户级 `~/.codex/config.toml` 中；Codex 会忽略项目本地 `.codex/config.toml` 里的模型 provider 配置。
+
+```toml
+model_provider = "bedrock-proxy"
+model = "openai.gpt-5.5"
+model_reasoning_effort = "high"
+
+# 如果代理未配置 Tavily/Brave web search provider，建议禁用 Codex web search。
+# Codex 默认的 cached web search 会发送 external_web_access=false，当前代理不支持该参数。
+# 如果代理配置了 Tavily/Brave web search provider，则设置成 "live" 开启
+web_search = "disabled"
+
+[model_providers.bedrock-proxy]
+name = "Bedrock API Proxy"
+base_url = "https://your-proxy.example.com/openai/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+```
+
+将 `OPENAI_API_KEY` 设置为代理 API Key，而不是 Bedrock API Key：
+
+```bash
+export OPENAI_API_KEY="sk-your-proxy-api-key"
+```
+
+如果希望 Codex 通过代理执行 web search，请先在代理服务端配置 `ENABLE_WEB_SEARCH=True` 以及 `WEB_SEARCH_PROVIDER`/`WEB_SEARCH_API_KEY`，然后设置：
+
+```toml
+web_search = "live"
+```
+
 #### Chat Completions API
 
 ```python
