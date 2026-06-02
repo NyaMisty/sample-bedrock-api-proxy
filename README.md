@@ -266,6 +266,40 @@ curl http://localhost:8000/v1/models -H "x-api-key: sk-xxx"
 
 Requires `ENABLE_OPENAI_PASSTHROUGH=True` on the proxy. Point the OpenAI SDK at `<proxy>/openai/v1` and use your **proxy API key** — the proxy supplies the upstream Bedrock credentials. Bedrock model IDs (e.g. `openai.gpt-oss-120b`) are passed through; Anthropic-style aliases are resolved via the model mapping table.
 
+#### Codex CLI / IDE
+
+Codex can use the proxy as a custom Responses API model provider. Put the provider settings in your user-level `~/.codex/config.toml` because Codex ignores model provider settings from project-local `.codex/config.toml` files.
+
+```toml
+model_provider = "bedrock-proxy"
+model = "openai.gpt-5.5"
+model_reasoning_effort = "high"
+
+# Recommended when the proxy has no Tavily/Brave web-search provider configured.
+# Codex's default cached web search sends external_web_access=false, which this
+# proxy does not support.
+# If proxy-side web search is enabled, set web_search to "live".
+web_search = "disabled"
+
+[model_providers.bedrock-proxy]
+name = "Bedrock API Proxy"
+base_url = "https://your-proxy.example.com/openai/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+```
+
+Set `OPENAI_API_KEY` to a proxy API key, not a Bedrock API key:
+
+```bash
+export OPENAI_API_KEY="sk-your-proxy-api-key"
+```
+
+If you want Codex web search through the proxy, configure `ENABLE_WEB_SEARCH=True` plus `WEB_SEARCH_PROVIDER`/`WEB_SEARCH_API_KEY` on the proxy service, then set:
+
+```toml
+web_search = "live"
+```
+
 #### Chat Completions API
 
 ```python
