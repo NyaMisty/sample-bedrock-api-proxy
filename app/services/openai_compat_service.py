@@ -20,6 +20,12 @@ from uuid import uuid4
 from openai import APIStatusError, OpenAI, OpenAIError
 
 from app.converters.anthropic_to_openai import AnthropicToOpenAIConverter
+from app.converters.anthropic_to_openai_responses import (
+    AnthropicToOpenAIResponsesConverter,
+)
+from app.converters.openai_responses_to_anthropic import (
+    OpenAIResponsesToAnthropicConverter,
+)
 from app.converters.openai_to_anthropic import OpenAIToAnthropicConverter
 from app.core.config import settings
 from app.core.exceptions import BedrockAPIError
@@ -66,16 +72,28 @@ class OpenAICompatService:
     back to Anthropic format.
     """
 
-    def __init__(self):
-        """Initialize the OpenAI-compatible service."""
+    def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None):
+        """Initialize the OpenAI-compatible service.
+
+        Args:
+            base_url: Optional override for the OpenAI-compatible endpoint URL.
+                Falls back to ``settings.openai_base_url`` when None. Used by the
+                multi-provider / per-key path to target a provider-specific
+                bedrock-mantle endpoint.
+            api_key: Optional override for the API key. Falls back to
+                ``settings.openai_api_key`` when None.
+        """
+        resolved_base_url = base_url or settings.openai_base_url
         self.client = OpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
+            api_key=api_key or settings.openai_api_key,
+            base_url=resolved_base_url,
             timeout=settings.bedrock_timeout,
         )
         self.request_converter = AnthropicToOpenAIConverter()
         self.response_converter = OpenAIToAnthropicConverter()
-        print(f"[OPENAI-COMPAT] Initialized with base_url={settings.openai_base_url}")
+        self.responses_request_converter = AnthropicToOpenAIResponsesConverter()
+        self.responses_response_converter = OpenAIResponsesToAnthropicConverter()
+        print(f"[OPENAI-COMPAT] Initialized with base_url={resolved_base_url}")
 
     def invoke_model_sync(
         self, request: MessageRequest, request_id: Optional[str] = None
@@ -236,6 +254,110 @@ class OpenAICompatService:
             return await loop.run_in_executor(
                 executor,
                 self.invoke_model_sync,
+                request,
+                request_id,
+            )
+
+    def invoke_responses_sync(
+        self, request: MessageRequest, request_id: Optional[str] = None
+    ) -> MessageResponse:
+        """Synchronously invoke a model via OpenAI Responses API.
+
+        Converts the Anthropic request to Responses API kwargs (always
+        stateless, ``store=False``), calls ``client.responses.create``, and
+        converts the response back to Anthropic format.
+
+        Args:
+            request: Anthropic MessageRequest.
+            request_id: Optional request ID for logging.
+
+        Returns:
+            MessageResponse in Anthropic format.
+        """
+        kwargs = self.responses_request_converter.convert_request(request)
+
+        print(f"[OPENAI-COMPAT-RESPONSES] Calling Responses API")
+        print(f"  - Model: {kwargs.get('model')}")
+        print(f"  - Input items: {len(kwargs.get('input', []))}")
+        print(f"  - Has tools: {bool(kwargs.get('tools'))}")
+        print(f"  - Tools count: {len(kwargs.get('tools', []))}")
+        print(f"  - max_output_tokens: {kwargs.get('max_output_tokens')}")
+        print(f"  - store: {kwargs.get('store')}")
+        print(f"  - Request ID: {request_id}")
+
+        try:
+            response = self.client.responses.create(**kwargs)
+            resp_dict = response.model_dump()
+
+            anthropic_response = self.responses_response_converter.convert_response(
+                resp_dict, request.model
+            )
+
+            print(f"[OPENAI-COMPAT-RESPONSES] Response received:")
+            print(f"  - Responses response ID: {resp_dict.get('id')}")
+            print(f"  - Stop reason: {anthropic_response.stop_reason}")
+            print(f"  - Content blocks: {len(anthropic_response.content)}")
+            print(
+                f"  - Usage: input_tokens={anthropic_response.usage.input_tokens}, "
+                f"output_tokens={anthropic_response.usage.output_tokens}"
+            )
+
+            return anthropic_response
+
+        except APIStatusError as e:
+            print(f"[OPENAI-COMPAT-RESPONSES] OpenAI API error: {e}")
+            # Map OpenAI HTTP status to Anthropic error types
+            status_to_type = {
+                400: ("invalid_request_error", "invalid_request_error"),
+                401: ("authentication_error", "authentication_error"),
+                403: ("permission_error", "permission_error"),
+                404: ("not_found_error", "not_found_error"),
+                429: ("rate_limit_error", "rate_limit_error"),
+            }
+            error_type, error_code = status_to_type.get(
+                e.status_code, ("api_error", "api_error")
+            )
+            raise BedrockAPIError(
+                error_code=error_code,
+                error_message=str(e.message) if hasattr(e, "message") else str(e),
+                http_status=e.status_code,
+                error_type=error_type,
+            )
+        except OpenAIError as e:
+            print(f"[OPENAI-COMPAT-RESPONSES] OpenAI client error: {e}")
+            raise BedrockAPIError(
+                error_code="api_error",
+                error_message=str(e),
+                http_status=500,
+                error_type="api_error",
+            )
+        except Exception as e:
+            print(f"[OPENAI-COMPAT-RESPONSES] Unexpected error: {e}")
+            raise
+
+    async def invoke_responses(
+        self, request: MessageRequest, request_id: Optional[str] = None
+    ) -> MessageResponse:
+        """Asynchronously invoke a model via OpenAI Responses API.
+
+        Runs the synchronous call in a thread pool with semaphore control,
+        mirroring ``invoke_model``.
+
+        Args:
+            request: Anthropic MessageRequest.
+            request_id: Optional request ID for logging.
+
+        Returns:
+            MessageResponse in Anthropic format.
+        """
+        executor = _get_executor()
+        semaphore = _get_semaphore()
+
+        async with semaphore:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                executor,
+                self.invoke_responses_sync,
                 request,
                 request_id,
             )
