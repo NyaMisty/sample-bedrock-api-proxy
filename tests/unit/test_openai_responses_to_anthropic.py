@@ -155,6 +155,23 @@ def test_missing_id_generates_msg_id():
     assert result.id.startswith("msg_")
 
 
+def test_only_reasoning_yields_empty_text_block():
+    resp = {
+        "id": "resp_only_reasoning",
+        "model": "m",
+        "output": [{"type": "reasoning", "id": "rs_1", "summary": []}],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+
+    result = _converter().convert_response(resp, model="m")
+
+    assert len(result.content) == 1
+    block = result.content[0]
+    assert isinstance(block, TextContent)
+    assert block.text == ""
+    assert result.stop_reason == "end_turn"
+
+
 def test_function_call_invalid_arguments_defaults_to_empty_dict():
     resp = {
         "id": "resp_bad",

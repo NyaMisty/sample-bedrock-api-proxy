@@ -68,10 +68,24 @@ class OpenAIResponsesToAnthropicConverter:
 
             if item_type == "message":
                 for entry in item.get("content", []) or []:
-                    if entry.get("type") == "output_text":
+                    entry_type = entry.get("type")
+                    if entry_type == "output_text":
                         content.append(
                             TextContent(type="text", text=entry.get("text", ""))
                         )
+                    else:
+                        logger.debug(
+                            "Skipping unrecognized message content entry type: %s",
+                            entry_type,
+                        )
+                continue
+
+            logger.debug("Skipping unrecognized output item type: %s", item_type)
+
+        # An Anthropic MessageResponse with empty content can stall the agentic
+        # loop; mirror the Chat-Completions converter and emit an empty text block.
+        if not content:
+            content.append(TextContent(type="text", text=""))
 
         stop_reason = "tool_use" if has_tool_call else "end_turn"
 
