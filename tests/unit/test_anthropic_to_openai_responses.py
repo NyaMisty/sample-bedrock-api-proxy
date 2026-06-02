@@ -182,7 +182,7 @@ def test_tools_conversion():
     ]
 
 
-def test_tool_choice_passed_through():
+def test_tool_choice_auto():
     request = MessageRequest(
         model="openai.gpt-5.5",
         max_tokens=512,
@@ -191,6 +191,28 @@ def test_tool_choice_passed_through():
     )
     result = _converter().convert_request(request)
     assert result["tool_choice"] == "auto"
+
+
+def test_tool_choice_any_becomes_required():
+    request = MessageRequest(
+        model="openai.gpt-5.5",
+        max_tokens=512,
+        tool_choice="any",
+        messages=[Message(role="user", content="hi")],
+    )
+    result = _converter().convert_request(request)
+    assert result["tool_choice"] == "required"
+
+
+def test_tool_choice_specific_tool_becomes_function():
+    request = MessageRequest(
+        model="openai.gpt-5.5",
+        max_tokens=512,
+        tool_choice={"type": "tool", "name": "web_search"},
+        messages=[Message(role="user", content="hi")],
+    )
+    result = _converter().convert_request(request)
+    assert result["tool_choice"] == {"type": "function", "name": "web_search"}
 
 
 def test_image_and_thinking_blocks_skipped():
@@ -225,6 +247,23 @@ def test_image_and_thinking_blocks_skipped():
         {"role": "user", "content": "describe this"},
         {"role": "assistant", "content": "a cat"},
     ]
+
+
+def test_assistant_thinking_only_produces_no_item():
+    request = MessageRequest(
+        model="openai.gpt-5.5",
+        max_tokens=512,
+        messages=[
+            Message(role="user", content="hi"),
+            Message(
+                role="assistant",
+                content=[ThinkingContent(thinking="just thinking, no output")],
+            ),
+        ],
+    )
+    result = _converter().convert_request(request)
+    # Thinking-only assistant message contributes nothing and does not crash.
+    assert result["input"] == [{"role": "user", "content": "hi"}]
 
 
 def test_consecutive_text_blocks_coalesced():

@@ -12,7 +12,6 @@ request is always stateless (``store=False``) and the full conversation is
 re-rendered into the ``input`` array on every call.
 """
 import json
-import logging
 from typing import Any, Dict, List
 
 from app.schemas.anthropic import (
@@ -23,8 +22,6 @@ from app.schemas.anthropic import (
     ToolResultContent,
     ToolUseContent,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class AnthropicToOpenAIResponsesConverter:
@@ -62,9 +59,12 @@ class AnthropicToOpenAIResponsesConverter:
         if request.tools:
             result["tools"] = self._convert_tools(request.tools)
 
-        # Tool choice (pass through dict or string as-is)
+        # Tool choice (translate Anthropic shapes to Responses API shapes)
         if request.tool_choice is not None:
-            result["tool_choice"] = request.tool_choice
+            result["tool_choice"] = self._convert_tool_choice(request.tool_choice)
+
+        # Sampling params (temperature/top_p/stop/stream) are intentionally
+        # omitted: the server-side web-search loop controls sampling itself.
 
         return result
 
@@ -204,8 +204,9 @@ class AnthropicToOpenAIResponsesConverter:
         """Convert Anthropic Tool definitions to Responses function tools."""
         openai_tools: List[Dict[str, Any]] = []
         for tool in tools:
-            name = getattr(tool, "name", None)
-            description = getattr(tool, "description", None)
+            # Default name/description to "" — mantle rejects null values.
+            name = getattr(tool, "name", "") or ""
+            description = getattr(tool, "description", "") or ""
             input_schema = getattr(tool, "input_schema", None)
 
             if input_schema is not None and hasattr(input_schema, "model_dump"):
@@ -222,3 +223,29 @@ class AnthropicToOpenAIResponsesConverter:
                 "parameters": parameters,
             })
         return openai_tools
+
+    def _convert_tool_choice(self, tool_choice: Any) -> Any:
+        """Translate Anthropic tool_choice into the Responses API shape.
+
+        Mirrors the sibling Chat Completions converter:
+        - "auto" → "auto"
+        - "any" → "required"
+        - {"type":"tool","name":X} → {"type":"function","name":X}
+        - "none" / unknown → passed through sensibly.
+        """
+        if isinstance(tool_choice, str):
+            if tool_choice == "any":
+                return "required"
+            return tool_choice  # "auto", "none", etc. pass through
+
+        if isinstance(tool_choice, dict):
+            tc_type = tool_choice.get("type", "")
+            if tc_type == "auto":
+                return "auto"
+            elif tc_type == "any":
+                return "required"
+            elif tc_type == "none":
+                return "none"
+            elif tc_type == "tool":
+                return {"type": "function", "name": tool_choice.get("name", "")}
+        return "auto"
