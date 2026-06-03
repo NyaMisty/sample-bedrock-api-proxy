@@ -27,8 +27,7 @@ def test_normalize_chat_completions_with_cache_and_reasoning():
         "completion_tokens_details": {"reasoning_tokens": 20},
     }
     result = normalize_usage(raw, "chat_completions")
-    # cache hits subtracted from input
-    assert result["input_tokens"] == 70
+    assert result["input_tokens"] == 100
     assert result["output_tokens"] == 50
     assert result["cache_read_input_tokens"] == 30
     assert result["reasoning_tokens"] == 20
@@ -51,7 +50,7 @@ def test_normalize_responses_with_cache_and_reasoning():
         "output_tokens_details": {"reasoning_tokens": 15},
     }
     result = normalize_usage(raw, "responses")
-    assert result["input_tokens"] == 75
+    assert result["input_tokens"] == 100
     assert result["output_tokens"] == 50
     assert result["cache_read_input_tokens"] == 25
     assert result["reasoning_tokens"] == 15

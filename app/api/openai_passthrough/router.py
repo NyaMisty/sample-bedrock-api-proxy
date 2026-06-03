@@ -50,6 +50,15 @@ from app.services.web_search_service import get_web_search_service
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+UPSTREAM_REQUEST_ID_HEADERS = (
+    "x-request-id",
+    "request-id",
+    "x-amzn-requestid",
+    "x-amzn-request-id",
+    "x-amz-request-id",
+    "x-amzn-bedrock-invocation-id",
+)
+
 _ddb: DynamoDBClient | None = None
 _mapping: ModelMappingManager | None = None
 _usage: UsageTracker | None = None
@@ -67,6 +76,19 @@ def _log_json(value: Any) -> str:
         )
     except (TypeError, ValueError):
         return repr(value)
+
+
+def _upstream_request_id_log_fields(headers: Any | None) -> dict[str, str]:
+    if headers is None:
+        return {}
+    for name in UPSTREAM_REQUEST_ID_HEADERS:
+        value = headers.get(name)
+        if value:
+            return {
+                "upstream_request_id": str(value),
+                "upstream_request_id_header": name,
+            }
+    return {}
 
 
 def _info_log_upstream_request(
@@ -99,19 +121,20 @@ def _info_log_upstream_response(
     status_code: int,
     body: Any,
     stream: bool = False,
+    headers: Any | None = None,
 ) -> None:
     if not logger.isEnabledFor(logging.INFO):
         return
+    payload = {
+        "path": path,
+        "status_code": status_code,
+        "stream": stream,
+        "body": body,
+    }
+    payload.update(_upstream_request_id_log_fields(headers))
     logger.info(
         "[OPENAI-PASSTHROUGH] upstream response %s",
-        _log_json(
-            {
-                "path": path,
-                "status_code": status_code,
-                "stream": stream,
-                "body": body,
-            }
-        ),
+        _log_json(payload),
     )
 
 
@@ -188,6 +211,7 @@ def _record_usage(
             cache_write_input_tokens=norm["cache_creation_input_tokens"],
             api_surface=api_surface,
             reasoning_tokens=norm["reasoning_tokens"],
+            metadata={"input_tokens_include_cached_tokens": True},
         )
     except Exception as exc:
         logger.warning("[OPENAI-PASSTHROUGH] usage recording failed: %s", exc)
@@ -250,6 +274,7 @@ async def chat_completions(
                 status_code=upstream_resp.status_code,
                 body=error_payload,
                 stream=True,
+                headers=upstream_resp.headers,
             )
             return JSONResponse(error_payload, status_code=upstream_resp.status_code)
         _info_log_upstream_response(
@@ -257,6 +282,7 @@ async def chat_completions(
             status_code=upstream_resp.status_code,
             body={"stream": "opened"},
             stream=True,
+            headers=upstream_resp.headers,
         )
 
         async def on_complete(usage: dict[str, Any]) -> None:
@@ -282,6 +308,7 @@ async def chat_completions(
             path="/responses",
             status_code=resp.status_code,
             body=error_payload,
+            headers=resp.headers,
         )
         return JSONResponse(error_payload, status_code=resp.status_code)
 
@@ -291,6 +318,7 @@ async def chat_completions(
         path="/responses",
         status_code=resp.status_code,
         body=chat_data,
+        headers=resp.headers,
     )
     if isinstance(data, dict) and isinstance(data.get("usage"), dict):
         _record_usage(api_key_info, data["usage"], body["model"], "chat_completions")
@@ -479,6 +507,7 @@ async def responses_create(
                 status_code=upstream_resp.status_code,
                 body=error_payload,
                 stream=True,
+                headers=upstream_resp.headers,
             )
             return JSONResponse(error_payload, status_code=upstream_resp.status_code)
         _info_log_upstream_response(
@@ -486,6 +515,7 @@ async def responses_create(
             status_code=upstream_resp.status_code,
             body={"stream": "opened"},
             stream=True,
+            headers=upstream_resp.headers,
         )
 
         async def on_complete(usage: dict[str, Any]) -> None:
@@ -507,6 +537,7 @@ async def responses_create(
             path="/responses",
             status_code=resp.status_code,
             body=error_payload,
+            headers=resp.headers,
         )
         return JSONResponse(error_payload, status_code=resp.status_code)
 
@@ -515,6 +546,7 @@ async def responses_create(
         path="/responses",
         status_code=resp.status_code,
         body=data,
+        headers=resp.headers,
     )
     if isinstance(data, dict) and isinstance(data.get("usage"), dict):
         _record_usage(api_key_info, data["usage"], body["model"], "responses")
@@ -553,6 +585,7 @@ async def _passthrough_request(
         path=path,
         status_code=resp.status_code,
         body=response_body,
+        headers=resp.headers,
     )
     return Response(
         content=resp.content,

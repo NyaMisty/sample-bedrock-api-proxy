@@ -1595,6 +1595,7 @@ class UsageStatsManager:
                     cached_tokens = int(item.get("cached_tokens", 0))
                     cache_write_tokens = int(item.get("cache_write_input_tokens", 0))
                     record_timestamp = int(item.get("timestamp", 0))
+                    metadata = item.get("metadata") or {}
 
                     total_input_tokens += input_tokens
                     total_output_tokens += output_tokens
@@ -1627,9 +1628,17 @@ class UsageStatsManager:
                             else:
                                 effective_cache_write_price = cache_write_price
 
+                            if metadata.get("input_tokens_include_cached_tokens"):
+                                input_billable_tokens = max(
+                                    input_tokens - cached_tokens - cache_write_tokens,
+                                    0,
+                                )
+                            else:
+                                input_billable_tokens = input_tokens
+
                             # Prices are per 1M tokens
                             cost = (
-                                (input_tokens * input_price / 1_000_000)
+                                (input_billable_tokens * input_price / 1_000_000)
                                 + (output_tokens * output_price / 1_000_000)
                                 + (cached_tokens * cache_read_price / 1_000_000)
                                 + (cache_write_tokens * effective_cache_write_price / 1_000_000)

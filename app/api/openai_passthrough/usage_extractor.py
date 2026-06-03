@@ -36,10 +36,8 @@ def normalize_usage(raw: dict[str, Any], api_surface: str) -> dict[str, int]:
             (raw.get("output_tokens_details") or {}).get("reasoning_tokens", 0) or 0
         )
 
-    # Cache-read tokens are billed separately, so subtract them from input_tokens
-    # to mirror how the Anthropic flow accounts for cache hits.
     return {
-        "input_tokens": max(in_tok - cached, 0),
+        "input_tokens": in_tok,
         "output_tokens": out_tok,
         "cache_read_input_tokens": cached,
         "cache_creation_input_tokens": 0,  # Not exposed by OpenAI-format APIs

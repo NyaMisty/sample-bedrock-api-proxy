@@ -64,11 +64,12 @@ def test_non_streaming_chat_completions_forwards_and_logs_usage(
     # Usage was recorded
     assert mock_usage_tracker.record_usage.called
     kwargs = mock_usage_tracker.record_usage.call_args.kwargs
-    assert kwargs["input_tokens"] == 7
+    assert kwargs["input_tokens"] == 10
     assert kwargs["output_tokens"] == 5
     assert kwargs["cached_tokens"] == 3
     assert kwargs["reasoning_tokens"] == 2
     assert kwargs["api_surface"] == "chat_completions"
+    assert kwargs["metadata"] == {"input_tokens_include_cached_tokens": True}
     assert kwargs["model"] == "openai.gpt-oss-120b"
 
 
@@ -110,6 +111,36 @@ def test_non_streaming_chat_completions_info_logs_input_and_output(
     assert "[OPENAI-PASSTHROUGH] upstream response" in info_logs
     assert '"status_code":200' in info_logs
     assert '"content":"info answer"' in info_logs
+
+
+def test_non_streaming_chat_completions_info_logs_upstream_request_id(
+    client, respx_mock, caplog
+):
+    caplog.set_level(logging.INFO, logger="app.api.openai_passthrough.router")
+    respx_mock.post("/responses").mock(
+        return_value=httpx.Response(
+            200,
+            headers={"x-request-id": "req_mantle_nonstream"},
+            json={
+                "id": "resp-info",
+                "object": "response",
+                "model": "openai.gpt-oss-120b",
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            },
+        )
+    )
+
+    r = client.post(
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert r.status_code == 200
+    info_logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"upstream_request_id":"req_mantle_nonstream"' in info_logs
+    assert '"upstream_request_id_header":"x-request-id"' in info_logs
 
 
 def test_model_mapping_is_applied(client, respx_mock, mock_model_mapping_manager):
@@ -242,7 +273,7 @@ def test_streaming_chat_completions_forwards_sse_and_records_usage(
     # Usage recorded from the chunk that had it
     assert mock_usage_tracker.record_usage.called
     kw = mock_usage_tracker.record_usage.call_args.kwargs
-    assert kw["input_tokens"] == 6
+    assert kw["input_tokens"] == 7
     assert kw["output_tokens"] == 2
     assert kw["cached_tokens"] == 1
     assert kw["api_surface"] == "chat_completions"
@@ -282,6 +313,45 @@ def test_streaming_chat_completions_info_logs_input_and_output_chunks(
     assert '"path":"/responses"' in info_logs
     assert '"content":"info stream input"' in info_logs
     assert "info stream" in info_logs
+
+
+def test_streaming_chat_completions_info_logs_upstream_request_id(
+    client, respx_mock, caplog
+):
+    caplog.set_level(logging.INFO, logger="app.api.openai_passthrough.router")
+    body = "\n".join(
+        [
+            'data: {"type":"response.created","response":{"id":"resp-info","model":"m"}}',
+            'data: {"type":"response.completed","response":{"id":"resp-info","model":"m"}}',
+        ]
+    ).encode()
+    respx_mock.post("/responses").mock(
+        return_value=httpx.Response(
+            200,
+            headers={
+                "content-type": "text/event-stream",
+                "x-amzn-requestid": "req_mantle_stream",
+            },
+            content=body,
+        )
+    )
+
+    with client.stream(
+        "POST",
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    ) as r:
+        list(r.iter_bytes())
+
+    assert r.status_code == 200
+    info_logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"upstream_request_id":"req_mantle_stream"' in info_logs
+    assert '"upstream_request_id_header":"x-amzn-requestid"' in info_logs
 
 
 def test_streaming_chat_completions_without_include_usage_does_not_log(
