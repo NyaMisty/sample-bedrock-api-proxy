@@ -13,6 +13,11 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.api.openai_passthrough.chat_responses_adapter import (
+    chat_request_to_response_request,
+    response_to_chat_completion,
+    stream_responses_as_chat_completions,
+)
 from app.api.openai_passthrough.client import get_client, upstream_headers, upstream_url
 from app.api.openai_passthrough.context_store import (
     ResponseContextNotFound,
@@ -212,13 +217,14 @@ async def chat_completions(
     body = await request.json()
     mapping, _, _ = _managers()
     body["model"] = resolve_model_id(body.get("model", ""), mapping)
+    upstream_body = chat_request_to_response_request(body)
     extra = _passthrough_extra_headers(request)
     base_url, api_key = _resolve_upstream_target(api_key_info)
     _info_log_upstream_request(
         method="POST",
-        path="/chat/completions",
-        body=body,
-        stream=bool(body.get("stream")),
+        path="/responses",
+        body=upstream_body,
+        stream=bool(upstream_body.get("stream")),
         base_url=base_url,
     )
 
@@ -226,8 +232,8 @@ async def chat_completions(
         try:
             upstream_resp, error_body = await open_upstream_stream(
                 "POST",
-                "/chat/completions",
-                body,
+                "/responses",
+                upstream_body,
                 extra,
                 base_url=base_url,
                 api_key=api_key,
@@ -240,14 +246,14 @@ async def chat_completions(
         if error_body is not None:
             error_payload = _decode_error_body(error_body)
             _info_log_upstream_response(
-                path="/chat/completions",
+                path="/responses",
                 status_code=upstream_resp.status_code,
                 body=error_payload,
                 stream=True,
             )
             return JSONResponse(error_payload, status_code=upstream_resp.status_code)
         _info_log_upstream_response(
-            path="/chat/completions",
+            path="/responses",
             status_code=upstream_resp.status_code,
             body={"stream": "opened"},
             stream=True,
@@ -257,33 +263,38 @@ async def chat_completions(
             _record_usage(api_key_info, usage, body["model"], "chat_completions")
 
         return StreamingResponse(
-            stream_passthrough_response(upstream_resp, "chat_completions", on_complete),
+            stream_responses_as_chat_completions(
+                upstream_resp,
+                model=body["model"],
+                on_complete=on_complete,
+            ),
             media_type="text/event-stream",
         )
 
     resp = await get_client().post(
-        upstream_url("/chat/completions", base_url=base_url),
-        json=body,
+        upstream_url("/responses", base_url=base_url),
+        json=upstream_body,
         headers=upstream_headers(extra, api_key=api_key),
     )
     if resp.status_code >= 400:
         error_payload = _safe_json(resp)
         _info_log_upstream_response(
-            path="/chat/completions",
+            path="/responses",
             status_code=resp.status_code,
             body=error_payload,
         )
         return JSONResponse(error_payload, status_code=resp.status_code)
 
     data = resp.json()
+    chat_data = response_to_chat_completion(data, model=body["model"])
     _info_log_upstream_response(
-        path="/chat/completions",
+        path="/responses",
         status_code=resp.status_code,
-        body=data,
+        body=chat_data,
     )
     if isinstance(data, dict) and isinstance(data.get("usage"), dict):
         _record_usage(api_key_info, data["usage"], body["model"], "chat_completions")
-    return JSONResponse(data, status_code=resp.status_code)
+    return JSONResponse(chat_data, status_code=resp.status_code)
 
 
 @router.post("/responses")

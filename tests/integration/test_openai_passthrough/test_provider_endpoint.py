@@ -42,9 +42,9 @@ def test_chat_completions_uses_per_key_provider_endpoint(
     provider_mgr = _provider_manager_for(provider_endpoint, "east2-bedrock-key")
 
     upstream_resp = {
-        "id": "chatcmpl-1",
-        "choices": [],
-        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        "id": "resp-1",
+        "output": [],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
     }
 
     with patch(
@@ -52,10 +52,10 @@ def test_chat_completions_uses_per_key_provider_endpoint(
         return_value=provider_mgr,
         create=True,
     ), respx.mock(assert_all_called=False) as rmock:
-        provider_route = rmock.post(
-            f"{provider_endpoint}/chat/completions"
-        ).mock(return_value=httpx.Response(200, json=upstream_resp))
-        default_route = rmock.post("https://mantle.test/v1/chat/completions").mock(
+        provider_route = rmock.post(f"{provider_endpoint}/responses").mock(
+            return_value=httpx.Response(200, json=upstream_resp)
+        )
+        default_route = rmock.post("https://mantle.test/v1/responses").mock(
             return_value=httpx.Response(200, json=upstream_resp)
         )
 
@@ -76,6 +76,7 @@ def test_chat_completions_uses_per_key_provider_endpoint(
     # Provider's own credential is used, not the global Bedrock API key.
     assert sent.headers["authorization"] == "Bearer east2-bedrock-key"
     assert json.loads(sent.content)["model"] == "gpt-5.5"
+    assert json.loads(sent.content)["store"] is False
 
 
 def test_chat_completions_without_provider_uses_default_endpoint(
@@ -83,13 +84,13 @@ def test_chat_completions_without_provider_uses_default_endpoint(
 ):
     # No provider_id on the key → behaviour is unchanged (global default).
     upstream_resp = {
-        "id": "chatcmpl-1",
-        "choices": [],
-        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        "id": "resp-1",
+        "output": [],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
     }
     route = None
     with respx.mock(base_url="https://mantle.test/v1", assert_all_called=False) as rmock:
-        route = rmock.post("/chat/completions").mock(
+        route = rmock.post("/responses").mock(
             return_value=httpx.Response(200, json=upstream_resp)
         )
         r = client.post(
