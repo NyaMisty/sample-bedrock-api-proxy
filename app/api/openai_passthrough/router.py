@@ -5,6 +5,7 @@ Mounted at /openai/v1 only when settings.enable_openai_passthrough is True.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, cast
 from uuid import uuid4
@@ -12,6 +13,11 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.api.openai_passthrough.chat_responses_adapter import (
+    chat_request_to_response_request,
+    response_to_chat_completion,
+    stream_responses_as_chat_completions,
+)
 from app.api.openai_passthrough.client import get_client, upstream_headers, upstream_url
 from app.api.openai_passthrough.context_store import (
     ResponseContextNotFound,
@@ -49,6 +55,64 @@ _mapping: ModelMappingManager | None = None
 _usage: UsageTracker | None = None
 _context_store: Any | None = None
 _provider: ProviderManager | None = None
+
+
+def _log_json(value: Any) -> str:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _info_log_upstream_request(
+    *,
+    method: str,
+    path: str,
+    body: Any,
+    stream: bool = False,
+    base_url: str | None = None,
+) -> None:
+    if not logger.isEnabledFor(logging.INFO):
+        return
+    logger.info(
+        "[OPENAI-PASSTHROUGH] upstream request %s",
+        _log_json(
+            {
+                "method": method,
+                "path": path,
+                "stream": stream,
+                "base_url": base_url or settings.openai_base_url,
+                "body": body,
+            }
+        ),
+    )
+
+
+def _info_log_upstream_response(
+    *,
+    path: str,
+    status_code: int,
+    body: Any,
+    stream: bool = False,
+) -> None:
+    if not logger.isEnabledFor(logging.INFO):
+        return
+    logger.info(
+        "[OPENAI-PASSTHROUGH] upstream response %s",
+        _log_json(
+            {
+                "path": path,
+                "status_code": status_code,
+                "stream": stream,
+                "body": body,
+            }
+        ),
+    )
 
 
 def _managers() -> tuple[ModelMappingManager, UsageTracker, Any]:
@@ -153,14 +217,26 @@ async def chat_completions(
     body = await request.json()
     mapping, _, _ = _managers()
     body["model"] = resolve_model_id(body.get("model", ""), mapping)
+    upstream_body = chat_request_to_response_request(body)
     extra = _passthrough_extra_headers(request)
     base_url, api_key = _resolve_upstream_target(api_key_info)
+    _info_log_upstream_request(
+        method="POST",
+        path="/responses",
+        body=upstream_body,
+        stream=bool(upstream_body.get("stream")),
+        base_url=base_url,
+    )
 
     if body.get("stream"):
         try:
             upstream_resp, error_body = await open_upstream_stream(
-                "POST", "/chat/completions", body, extra,
-                base_url=base_url, api_key=api_key,
+                "POST",
+                "/responses",
+                upstream_body,
+                extra,
+                base_url=base_url,
+                api_key=api_key,
             )
         except UpstreamConnectionError as exc:
             return JSONResponse(
@@ -168,31 +244,57 @@ async def chat_completions(
                 status_code=exc.status_code,
             )
         if error_body is not None:
-            return JSONResponse(
-                _decode_error_body(error_body),
+            error_payload = _decode_error_body(error_body)
+            _info_log_upstream_response(
+                path="/responses",
                 status_code=upstream_resp.status_code,
+                body=error_payload,
+                stream=True,
             )
+            return JSONResponse(error_payload, status_code=upstream_resp.status_code)
+        _info_log_upstream_response(
+            path="/responses",
+            status_code=upstream_resp.status_code,
+            body={"stream": "opened"},
+            stream=True,
+        )
 
         async def on_complete(usage: dict[str, Any]) -> None:
             _record_usage(api_key_info, usage, body["model"], "chat_completions")
 
         return StreamingResponse(
-            stream_passthrough_response(upstream_resp, "chat_completions", on_complete),
+            stream_responses_as_chat_completions(
+                upstream_resp,
+                model=body["model"],
+                on_complete=on_complete,
+            ),
             media_type="text/event-stream",
         )
 
     resp = await get_client().post(
-        upstream_url("/chat/completions", base_url=base_url),
-        json=body,
+        upstream_url("/responses", base_url=base_url),
+        json=upstream_body,
         headers=upstream_headers(extra, api_key=api_key),
     )
     if resp.status_code >= 400:
-        return JSONResponse(_safe_json(resp), status_code=resp.status_code)
+        error_payload = _safe_json(resp)
+        _info_log_upstream_response(
+            path="/responses",
+            status_code=resp.status_code,
+            body=error_payload,
+        )
+        return JSONResponse(error_payload, status_code=resp.status_code)
 
     data = resp.json()
+    chat_data = response_to_chat_completion(data, model=body["model"])
+    _info_log_upstream_response(
+        path="/responses",
+        status_code=resp.status_code,
+        body=chat_data,
+    )
     if isinstance(data, dict) and isinstance(data.get("usage"), dict):
         _record_usage(api_key_info, data["usage"], body["model"], "chat_completions")
-    return JSONResponse(data, status_code=resp.status_code)
+    return JSONResponse(chat_data, status_code=resp.status_code)
 
 
 @router.post("/responses")
@@ -205,6 +307,13 @@ async def responses_create(
     body["model"] = resolve_model_id(body.get("model", ""), mapping)
     extra = _passthrough_extra_headers(request)
     base_url, api_key = _resolve_upstream_target(api_key_info)
+    _info_log_upstream_request(
+        method="POST",
+        path="/responses",
+        body=body,
+        stream=bool(body.get("stream")),
+        base_url=base_url,
+    )
 
     if is_responses_web_search_request(body):
         request_id = f"resp-{uuid4().hex}"
@@ -282,6 +391,12 @@ async def responses_create(
                 original_model=body.get("model", ""),
                 response_id=request_id,
             )
+            _info_log_upstream_response(
+                path="/responses",
+                status_code=200,
+                body=data,
+                stream=True,
+            )
             try:
                 context_store.save(
                     response_id=data["id"],
@@ -322,6 +437,11 @@ async def responses_create(
             return JSONResponse(exc.to_error_body(), status_code=exc.status_code)
         except Exception as exc:
             return _api_error_response(exc)
+        _info_log_upstream_response(
+            path="/responses",
+            status_code=200,
+            body=data,
+        )
         try:
             context_store.save(
                 response_id=data["id"],
@@ -340,8 +460,12 @@ async def responses_create(
     if body.get("stream"):
         try:
             upstream_resp, error_body = await open_upstream_stream(
-                "POST", "/responses", body, extra,
-                base_url=base_url, api_key=api_key,
+                "POST",
+                "/responses",
+                body,
+                extra,
+                base_url=base_url,
+                api_key=api_key,
             )
         except UpstreamConnectionError as exc:
             return JSONResponse(
@@ -349,10 +473,20 @@ async def responses_create(
                 status_code=exc.status_code,
             )
         if error_body is not None:
-            return JSONResponse(
-                _decode_error_body(error_body),
+            error_payload = _decode_error_body(error_body)
+            _info_log_upstream_response(
+                path="/responses",
                 status_code=upstream_resp.status_code,
+                body=error_payload,
+                stream=True,
             )
+            return JSONResponse(error_payload, status_code=upstream_resp.status_code)
+        _info_log_upstream_response(
+            path="/responses",
+            status_code=upstream_resp.status_code,
+            body={"stream": "opened"},
+            stream=True,
+        )
 
         async def on_complete(usage: dict[str, Any]) -> None:
             _record_usage(api_key_info, usage, body["model"], "responses")
@@ -368,9 +502,20 @@ async def responses_create(
         headers=upstream_headers(extra, api_key=api_key),
     )
     if resp.status_code >= 400:
-        return JSONResponse(_safe_json(resp), status_code=resp.status_code)
+        error_payload = _safe_json(resp)
+        _info_log_upstream_response(
+            path="/responses",
+            status_code=resp.status_code,
+            body=error_payload,
+        )
+        return JSONResponse(error_payload, status_code=resp.status_code)
 
     data = resp.json()
+    _info_log_upstream_response(
+        path="/responses",
+        status_code=resp.status_code,
+        body=data,
+    )
     if isinstance(data, dict) and isinstance(data.get("usage"), dict):
         _record_usage(api_key_info, data["usage"], body["model"], "responses")
     return JSONResponse(data, status_code=resp.status_code)
@@ -388,11 +533,26 @@ async def _passthrough_request(
             body = await request.json()
         except Exception:
             body = None
+    _info_log_upstream_request(
+        method=request.method,
+        path=path,
+        body=body,
+        base_url=base_url,
+    )
     resp = await get_client().request(
         request.method,
         upstream_url(path, base_url=base_url),
         json=body,
         headers=upstream_headers(extra, api_key=api_key),
+    )
+    if resp.headers.get("content-type", "").startswith("application/json"):
+        response_body: Any = _safe_json(resp)
+    else:
+        response_body = resp.text
+    _info_log_upstream_response(
+        path=path,
+        status_code=resp.status_code,
+        body=response_body,
     )
     return Response(
         content=resp.content,

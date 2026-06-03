@@ -19,14 +19,16 @@ def normalize_usage(raw: dict[str, Any], api_surface: str) -> dict[str, int]:
 
     api_surface: "chat_completions" or "responses"
     """
-    if api_surface == "chat_completions":
+    if api_surface == "chat_completions" and (
+        "prompt_tokens" in raw or "completion_tokens" in raw
+    ):
         in_tok = int(raw.get("prompt_tokens", 0) or 0)
         out_tok = int(raw.get("completion_tokens", 0) or 0)
         cached = int((raw.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0)
         reasoning = int(
             (raw.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0
         )
-    else:  # responses
+    else:  # responses, or chat_completions routed internally through responses
         in_tok = int(raw.get("input_tokens", 0) or 0)
         out_tok = int(raw.get("output_tokens", 0) or 0)
         cached = int((raw.get("input_tokens_details") or {}).get("cached_tokens", 0) or 0)

@@ -1,6 +1,7 @@
 """Integration tests for POST /openai/v1/chat/completions."""
 
 import json
+import logging
 
 import httpx
 
@@ -9,19 +10,25 @@ def test_non_streaming_chat_completions_forwards_and_logs_usage(
     client, respx_mock, mock_usage_tracker, mock_model_mapping_manager
 ):
     upstream_resp = {
-        "id": "chatcmpl-1",
-        "object": "chat.completion",
+        "id": "resp-1",
+        "object": "response",
         "model": "openai.gpt-oss-120b",
-        "choices": [
+        "output": [
             {
-                "index": 0,
-                "message": {"role": "assistant", "content": "hi"},
-                "finish_reason": "stop",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hi"}],
             }
         ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "input_tokens_details": {"cached_tokens": 3},
+            "output_tokens_details": {"reasoning_tokens": 2},
+        },
     }
-    route = respx_mock.post("/chat/completions").mock(
+    route = respx_mock.post("/responses").mock(
         return_value=httpx.Response(200, json=upstream_resp)
     )
 
@@ -35,35 +42,85 @@ def test_non_streaming_chat_completions_forwards_and_logs_usage(
     )
 
     assert r.status_code == 200
-    assert r.json() == upstream_resp
+    assert r.json()["object"] == "chat.completion"
+    assert r.json()["choices"][0]["message"] == {
+        "role": "assistant",
+        "content": "hi",
+    }
+    assert r.json()["usage"]["prompt_tokens"] == 10
+    assert r.json()["usage"]["completion_tokens"] == 5
+    assert r.json()["usage"]["prompt_tokens_details"]["cached_tokens"] == 3
+    assert (
+        r.json()["usage"]["completion_tokens_details"]["reasoning_tokens"] == 2
+    )
     assert route.called
     # Upstream got proxy's Bedrock API key, not the client's proxy key
     sent = route.calls[0].request
     assert sent.headers["authorization"] == "Bearer bedrock-key-test"
     sent_body = json.loads(sent.content)
     assert sent_body["model"] == "openai.gpt-oss-120b"
+    assert sent_body["input"] == [{"role": "user", "content": "hi"}]
+    assert sent_body["store"] is False
     # Usage was recorded
     assert mock_usage_tracker.record_usage.called
     kwargs = mock_usage_tracker.record_usage.call_args.kwargs
-    assert kwargs["input_tokens"] == 10
+    assert kwargs["input_tokens"] == 7
     assert kwargs["output_tokens"] == 5
+    assert kwargs["cached_tokens"] == 3
+    assert kwargs["reasoning_tokens"] == 2
     assert kwargs["api_surface"] == "chat_completions"
     assert kwargs["model"] == "openai.gpt-oss-120b"
 
 
+def test_non_streaming_chat_completions_info_logs_input_and_output(
+    client, respx_mock, caplog
+):
+    caplog.set_level(logging.INFO, logger="app.api.openai_passthrough.router")
+    upstream_resp = {
+        "id": "resp-info",
+        "object": "response",
+        "model": "openai.gpt-oss-120b",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "info answer"}],
+            }
+        ],
+        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+    }
+    respx_mock.post("/responses").mock(
+        return_value=httpx.Response(200, json=upstream_resp)
+    )
+
+    r = client.post(
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "openai.gpt-oss-120b",
+            "messages": [{"role": "user", "content": "info input"}],
+        },
+    )
+
+    assert r.status_code == 200
+    info_logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "[OPENAI-PASSTHROUGH] upstream request" in info_logs
+    assert '"path":"/responses"' in info_logs
+    assert '"content":"info input"' in info_logs
+    assert "[OPENAI-PASSTHROUGH] upstream response" in info_logs
+    assert '"status_code":200' in info_logs
+    assert '"content":"info answer"' in info_logs
+
+
 def test_model_mapping_is_applied(client, respx_mock, mock_model_mapping_manager):
     mock_model_mapping_manager.get_mapping.return_value = "openai.gpt-oss-120b"
-    route = respx_mock.post("/chat/completions").mock(
+    route = respx_mock.post("/responses").mock(
         return_value=httpx.Response(
             200,
             json={
                 "id": "x",
-                "choices": [],
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2,
-                },
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
             },
         )
     )
@@ -81,25 +138,21 @@ def test_model_mapping_is_applied(client, respx_mock, mock_model_mapping_manager
 def test_chat_completions_web_search_shape_still_passthrough(
     client, respx_mock, mock_web_search_service, mock_bedrock_service
 ):
-    route = respx_mock.post("/chat/completions").mock(
+    route = respx_mock.post("/responses").mock(
         return_value=httpx.Response(
             200,
             json={
-                "id": "chatcmpl-1",
-                "object": "chat.completion",
+                "id": "resp-1",
+                "object": "response",
                 "model": "m",
-                "choices": [
+                "output": [
                     {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "ok"},
-                        "finish_reason": "stop",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "ok"}],
                     }
                 ],
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2,
-                },
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
             },
         )
     )
@@ -118,6 +171,7 @@ def test_chat_completions_web_search_shape_still_passthrough(
     assert route.called
     sent = json.loads(route.calls[0].request.content)
     assert sent["tools"] == [{"type": "web_search"}]
+    assert sent["store"] is False
     assert not mock_web_search_service.get_service_mock.called
     assert not mock_web_search_service.handle_request.called
     assert not mock_bedrock_service.constructor_mock.called
@@ -127,7 +181,7 @@ def test_upstream_4xx_returned_verbatim(client, respx_mock, mock_usage_tracker):
     err_body = {
         "error": {"message": "model not found", "type": "invalid_request_error"}
     }
-    respx_mock.post("/chat/completions").mock(
+    respx_mock.post("/responses").mock(
         return_value=httpx.Response(404, json=err_body)
     )
 
@@ -152,15 +206,16 @@ def test_missing_auth_returns_401(client):
 def test_streaming_chat_completions_forwards_sse_and_records_usage(
     client, respx_mock, mock_usage_tracker
 ):
-    """Stream three SSE chunks; the second-to-last carries usage."""
+    """Responses SSE is converted back to Chat Completions SSE."""
     sse_lines = [
-        'data: {"id":"x","choices":[{"index":0,"delta":{"role":"assistant"}}]}',
-        'data: {"id":"x","choices":[{"index":0,"delta":{"content":"hi"}}]}',
-        'data: {"id":"x","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}',
-        "data: [DONE]",
+        'data: {"type":"response.created","response":{"id":"resp-x","model":"m"}}',
+        'data: {"type":"response.output_text.delta","delta":"hi"}',
+        'data: {"type":"response.completed","response":{"id":"resp-x","model":"m",'
+        '"usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9,'
+        '"input_tokens_details":{"cached_tokens":1}}}}',
     ]
     body = "\n".join(sse_lines).encode()
-    respx_mock.post("/chat/completions").mock(
+    respx_mock.post("/responses").mock(
         return_value=httpx.Response(
             200, headers={"content-type": "text/event-stream"}, content=body
         )
@@ -181,14 +236,52 @@ def test_streaming_chat_completions_forwards_sse_and_records_usage(
         out = b"".join(r.iter_bytes())
 
     # All four lines forwarded
-    assert b'"delta":{"role":"assistant"}' in out
+    assert b'"object":"chat.completion.chunk"' in out
+    assert b'"delta":{"content":"hi"}' in out
     assert b"[DONE]" in out
     # Usage recorded from the chunk that had it
     assert mock_usage_tracker.record_usage.called
     kw = mock_usage_tracker.record_usage.call_args.kwargs
-    assert kw["input_tokens"] == 7
+    assert kw["input_tokens"] == 6
     assert kw["output_tokens"] == 2
+    assert kw["cached_tokens"] == 1
     assert kw["api_surface"] == "chat_completions"
+
+
+def test_streaming_chat_completions_info_logs_input_and_output_chunks(
+    client, respx_mock, caplog
+):
+    caplog.set_level(logging.INFO, logger="app.api.openai_passthrough.router")
+    caplog.set_level(logging.INFO, logger="app.api.openai_passthrough.streaming")
+    sse_lines = [
+        'data: {"type":"response.created","response":{"id":"resp-info","model":"m"}}',
+        'data: {"type":"response.output_text.delta","delta":"info stream"}',
+        'data: {"type":"response.completed","response":{"id":"resp-info","model":"m"}}',
+    ]
+    body = "\n".join(sse_lines).encode()
+    respx_mock.post("/responses").mock(
+        return_value=httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=body
+        )
+    )
+
+    with client.stream(
+        "POST",
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "m",
+            "messages": [{"role": "user", "content": "info stream input"}],
+            "stream": True,
+        },
+    ) as r:
+        list(r.iter_bytes())
+
+    info_logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "[OPENAI-PASSTHROUGH] upstream request" in info_logs
+    assert '"path":"/responses"' in info_logs
+    assert '"content":"info stream input"' in info_logs
+    assert "info stream" in info_logs
 
 
 def test_streaming_chat_completions_without_include_usage_does_not_log(
@@ -196,11 +289,12 @@ def test_streaming_chat_completions_without_include_usage_does_not_log(
 ):
     """If client doesn't request usage, no usage chunk arrives → no usage logged."""
     sse_lines = [
-        'data: {"id":"x","choices":[{"index":0,"delta":{"content":"hi"}}]}',
-        "data: [DONE]",
+        'data: {"type":"response.created","response":{"id":"resp-x","model":"m"}}',
+        'data: {"type":"response.output_text.delta","delta":"hi"}',
+        'data: {"type":"response.completed","response":{"id":"resp-x","model":"m"}}',
     ]
     body = "\n".join(sse_lines).encode()
-    respx_mock.post("/chat/completions").mock(
+    respx_mock.post("/responses").mock(
         return_value=httpx.Response(
             200, headers={"content-type": "text/event-stream"}, content=body
         )
@@ -225,11 +319,12 @@ def test_streaming_chat_completions_does_not_inject_event_lines(
     The proxy must NOT synthesize event: lines for this api_surface.
     """
     sse_lines = [
-        'data: {"id":"x","choices":[{"index":0,"delta":{"content":"hi"}}]}',
-        "data: [DONE]",
+        'data: {"type":"response.created","response":{"id":"resp-x","model":"m"}}',
+        'data: {"type":"response.output_text.delta","delta":"hi"}',
+        'data: {"type":"response.completed","response":{"id":"resp-x","model":"m"}}',
     ]
     body = "\n".join(sse_lines).encode()
-    respx_mock.post("/chat/completions").mock(
+    respx_mock.post("/responses").mock(
         return_value=httpx.Response(
             200, headers={"content-type": "text/event-stream"}, content=body
         )
@@ -250,17 +345,13 @@ def test_streaming_chat_completions_does_not_inject_event_lines(
 
 def test_bedrock_guardrail_headers_are_forwarded(client, respx_mock):
     """X-Amzn-Bedrock-* headers from the client should reach the upstream call."""
-    route = respx_mock.post("/chat/completions").mock(
+    route = respx_mock.post("/responses").mock(
         return_value=httpx.Response(
             200,
             json={
                 "id": "x",
-                "choices": [],
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2,
-                },
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
             },
         )
     )
@@ -286,7 +377,7 @@ def test_streaming_upstream_timeout_returns_json_504(
     text/event-stream wrapping an SSE error frame). Strict clients can
     then act on the status code instead of hanging on a malformed stream.
     """
-    respx_mock.post("/chat/completions").mock(
+    respx_mock.post("/responses").mock(
         side_effect=httpx.ReadTimeout("upstream took too long")
     )
 

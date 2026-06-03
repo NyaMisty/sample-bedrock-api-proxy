@@ -467,7 +467,7 @@ In production (ECS), the admin portal frontend is served as static files from th
 
 ## OpenAI Passthrough
 
-Adds new `/openai/v1/*` endpoints that accept OpenAI-native API formats and forward them to `bedrock-mantle`. Distinct from `ENABLE_OPENAI_COMPAT` (which converts Anthropic-format requests on `/v1/messages` into OpenAI calls).
+Adds new `/openai/v1/*` endpoints that accept OpenAI-native API formats and call `bedrock-mantle`. Distinct from `ENABLE_OPENAI_COMPAT` (which converts Anthropic-format requests on `/v1/messages` into OpenAI calls).
 
 ### When to use it
 
@@ -487,7 +487,7 @@ MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-east-1.api.aws/v1
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/openai/v1/chat/completions` | Chat Completions (streaming + non-streaming) |
+| POST | `/openai/v1/chat/completions` | Chat Completions-compatible client surface; internally uses upstream Responses API with `store=false` |
 | POST | `/openai/v1/responses` | Responses API (streaming + non-streaming) |
 | GET | `/openai/v1/responses/{id}` | Retrieve stored response |
 | DELETE | `/openai/v1/responses/{id}` | Delete stored response |
@@ -525,7 +525,7 @@ Usage is normalized into the existing `anthropic-proxy-usage` schema. Two new sp
 - `api_surface` ∈ `{"messages", "chat_completions", "responses"}`
 - `reasoning_tokens` (already counted in `output_tokens`; stored separately for visibility)
 
-For streaming Chat Completions, clients must set `stream_options: {"include_usage": true}` for usage to be captured. Without it, usage is logged as zero. The Responses API always emits `response.completed` with usage.
+Chat Completions requests are translated to upstream Responses API calls with `store=false`, so usage is extracted from Responses-shaped usage and still recorded with `api_surface="chat_completions"`. Cache-read tokens are preserved from `input_tokens_details.cached_tokens`, and reasoning tokens are preserved from `output_tokens_details.reasoning_tokens` when present. The Responses API emits `response.completed` with usage for streaming requests.
 
 ### Guardrails
 
