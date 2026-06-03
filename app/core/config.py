@@ -182,6 +182,8 @@ class Settings(BaseSettings):
             "minimax.minimax-m2.5": "minimax.minimax-m2.5",
             "zai.glm-5": "zai.glm-5",
             "moonshotai.kimi-k2.5": "moonshotai.kimi-k2.5",
+            "gpt-5.5": "openai.gpt-5.5",
+            "gpt-5.4": "openai.gpt-5.4",
         },
         alias="DEFAULT_MODEL_MAPPING",
     )
