@@ -75,8 +75,9 @@ def test_chat_completions_uses_per_key_provider_endpoint(
     sent = provider_route.calls[0].request
     # Provider's own credential is used, not the global Bedrock API key.
     assert sent.headers["authorization"] == "Bearer east2-bedrock-key"
-    assert json.loads(sent.content)["model"] == "gpt-5.5"
-    assert json.loads(sent.content)["store"] is False
+    sent_body = json.loads(sent.content)
+    assert sent_body["model"] == "gpt-5.5"
+    assert "store" not in sent_body
 
 
 def test_chat_completions_without_provider_uses_default_endpoint(
