@@ -60,7 +60,7 @@ def test_non_streaming_chat_completions_forwards_and_logs_usage(
     sent_body = json.loads(sent.content)
     assert sent_body["model"] == "openai.gpt-oss-120b"
     assert sent_body["input"] == [{"role": "user", "content": "hi"}]
-    assert sent_body["store"] is False
+    assert "store" not in sent_body
     # Usage was recorded
     assert mock_usage_tracker.record_usage.called
     kwargs = mock_usage_tracker.record_usage.call_args.kwargs
@@ -202,10 +202,61 @@ def test_chat_completions_web_search_shape_still_passthrough(
     assert route.called
     sent = json.loads(route.calls[0].request.content)
     assert sent["tools"] == [{"type": "web_search"}]
-    assert sent["store"] is False
+    assert "store" not in sent
     assert not mock_web_search_service.get_service_mock.called
     assert not mock_web_search_service.handle_request.called
     assert not mock_bedrock_service.constructor_mock.called
+
+
+def test_chat_completions_normalizes_null_tool_required_fields(client, respx_mock):
+    route = respx_mock.post("/responses").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "resp-1",
+                "object": "response",
+                "model": "m",
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            },
+        )
+    )
+
+    r = client.post(
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "parameters": {
+                            "type": "object",
+                            "required": None,
+                            "properties": {
+                                "filters": {
+                                    "type": "object",
+                                    "required": None,
+                                    "properties": {
+                                        "tag": {"type": "string"},
+                                    },
+                                }
+                            },
+                        },
+                    },
+                }
+            ],
+        },
+    )
+
+    assert r.status_code == 200
+    sent = json.loads(route.calls[0].request.content)
+    parameters = sent["tools"][0]["parameters"]
+    assert parameters["required"] == []
+    assert parameters["properties"]["filters"]["required"] == []
 
 
 def test_upstream_4xx_returned_verbatim(client, respx_mock, mock_usage_tracker):

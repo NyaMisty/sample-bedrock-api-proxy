@@ -28,7 +28,7 @@ _CHAT_TO_RESPONSES_COPY_FIELDS = {
 
 def chat_request_to_response_request(body: dict[str, Any]) -> dict[str, Any]:
     """Convert an OpenAI Chat Completions body into a Responses API body."""
-    result: dict[str, Any] = {"model": body.get("model", ""), "store": False}
+    result: dict[str, Any] = {"model": body.get("model", "")}
 
     instructions: list[str] = []
     input_items: list[dict[str, Any]] = []
@@ -58,8 +58,6 @@ def chat_request_to_response_request(body: dict[str, Any]) -> dict[str, Any]:
     if "stop" in body:
         result["stop"] = body["stop"]
 
-    # The caller must remain stateless even if a client sends store=true.
-    result["store"] = False
     return result
 
 
@@ -284,9 +282,24 @@ def _convert_tool(tool: Any) -> Any:
         "type": "function",
         "name": function.get("name", ""),
         "description": function.get("description", ""),
-        "parameters": function.get("parameters", {}),
+        "parameters": _normalize_null_required_fields(function.get("parameters", {})),
     }
     return {key: value for key, value in converted.items() if value not in (None, "")}
+
+
+def _normalize_null_required_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (
+                []
+                if key == "required" and item is None
+                else _normalize_null_required_fields(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_null_required_fields(item) for item in value]
+    return value
 
 
 def _convert_tool_choice(tool_choice: Any) -> Any:
