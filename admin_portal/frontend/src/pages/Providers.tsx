@@ -220,7 +220,7 @@ function ProviderForm({
           value={formData.endpoint_url}
           onChange={(e) => setFormData({ ...formData, endpoint_url: e.target.value })}
           className="w-full px-3 py-2 bg-input-bg border border-border-dark rounded-lg text-white focus:border-primary focus:ring-1 focus:ring-primary"
-          placeholder="https://bedrock-runtime.us-east-1.amazonaws.com"
+          placeholder="https://bedrock-mantle.us-east-2.api.aws/openai/v1"
         />
         <p className="mt-1 text-xs text-slate-500">
           {t('providers.form.endpointUrlHint')}

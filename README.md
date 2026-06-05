@@ -150,7 +150,7 @@ WEB_SEARCH_PROVIDER=tavily \
 WEB_SEARCH_API_KEY=tvly-your-key \
 ENABLE_OPENAI_COMPAT=true \
 BEDROCK_API_KEY=your-bedrock-key \
-MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-west-2.api.aws/v1 \
+MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-east-2.api.aws/openai/v1 \
 ./scripts/deploy.sh -e prod -r us-west-2 -p arm64 -l ec2
 ```
 
@@ -162,43 +162,11 @@ Deployment takes ~15-20 minutes. See [CDK Deployment Guide](cdk/DEPLOYMENT.md) f
 # Create admin user
 ./scripts/create-admin-user.sh -e prod -r us-west-2 --email admin@example.com
 
-# Create API keys
-./scripts/create-api-key.sh -u user123 -n "My API Key"
-./scripts/create-api-key.sh -u user123 -n "Flex Key" -t flex
-
-# Test
-curl https://<cloudfront-url>/health
 ```
 
-### Option 2: Docker
+visit https://xxx.cloudfront.net/admin/ Admin portal to config api keys
 
-```bash
-# Build
-docker build -t anthropic-bedrock-proxy:latest .
-
-# Run (basic)
-docker run -d -p 8000:8000 \
-  -e AWS_REGION=us-east-1 \
-  -e AWS_ACCESS_KEY_ID=your-key \
-  -e AWS_SECRET_ACCESS_KEY=your-secret \
-  -e MASTER_API_KEY=your-master-key \
-  anthropic-bedrock-proxy:latest
-
-# Run with PTC (requires Docker socket)
-docker run -d -p 8000:8000 \
-  -e AWS_REGION=us-east-1 \
-  -e AWS_ACCESS_KEY_ID=your-key \
-  -e AWS_SECRET_ACCESS_KEY=your-secret \
-  -e MASTER_API_KEY=your-master-key \
-  -e ENABLE_PROGRAMMATIC_TOOL_CALLING=true \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  anthropic-bedrock-proxy:latest
-
-# Docker Compose (local dev with DynamoDB Local, Prometheus, Grafana)
-docker-compose up -d
-```
-
-### Option 3: Local Development
+### Option 2: Local Development
 
 ```bash
 # Install
