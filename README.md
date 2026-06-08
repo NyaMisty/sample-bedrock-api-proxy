@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔄 Anthropic-Bedrock API Proxy
+# 🔄 Bedrock API Proxy
 
 **Zero-Code Migration: Seamlessly Connect Anthropic SDK with AWS Bedrock**
 
@@ -22,12 +22,15 @@
 </div>
 
 ## Overview
+> ⚠️ Disclaimer: This project is provided as sample code for demonstration and learning purposes only, and is not intended for production use. Please conduct your own thorough security review, testing, and hardening before deploying to any production environment.
 
-This lightweight API conversion service enables you to use various large language models on AWS Bedrock with the Anthropic SDK without any code changes. Through simple environment variable configuration, you can seamlessly switch between different models like Qwen, DeepSeek, and others in tools such as Claude Code and Claude Agent SDK.
+A lightweight API translation service that lets you use various large language models on AWS Bedrock through the Anthropic SDK without modifying your code, while also providing Anthropic-compatible server-side features such as Code Execution, Dynamic Web Search, and PTC. Primarily designed as a proxy for Claude Code / Claude Agent SDK, it includes a visual management web interface for API key distribution, usage monitoring, and quota management. Now with full support for GPT on Bedrock, providing proxy services for Codex.
 
-> 📝 **AWS Blog**: [Programmatic Tool Calling Agent Using Amazon Bedrock and ECS Docker Sandbox](https://aws.amazon.com/cn/blogs/china/programmatic-tool-calling-agent-using-bedrock-and-ecs-docker-sandbox/)
+> 📝 **AWS Global Blog**：[Implementing programmatic tool calling on Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/implementing-programmatic-tool-calling-on-amazon-bedrock)
 >
-> 📝 **AWS Blog**: [Implement Dynamic Filtering Web Search and Web Fetch on Amazon Bedrock](https://aws.amazon.com/cn/blogs/china/based-on-amazon-bedrock-implement-dynamic-filtering-web-search-web-fetch/)
+> 📝 **AWS Chinese Blog**: [Programmatic Tool Calling Agent Using Amazon Bedrock and ECS Docker Sandbox](https://aws.amazon.com/cn/blogs/china/programmatic-tool-calling-agent-using-bedrock-and-ecs-docker-sandbox/)
+>
+> 📝 **AWS Chinese Blog**: [Implement Dynamic Filtering Web Search and Web Fetch on Amazon Bedrock](https://aws.amazon.com/cn/blogs/china/based-on-amazon-bedrock-implement-dynamic-filtering-web-search-web-fetch/)
 
 **Key Advantages:**
 - 🔄 **Zero Code Migration** - Fully compatible with Anthropic API, no code changes required

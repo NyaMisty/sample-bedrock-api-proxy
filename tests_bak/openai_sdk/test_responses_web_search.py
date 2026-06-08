@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - convenience for ad-hoc runs
     load_dotenv = None
 
 
-DEFAULT_MODEL = "openai.gpt-oss-120b"
+DEFAULT_MODEL = "openai.gpt-5.5"
 DEFAULT_QUERY = (
     "Search the web for one current positive technology news story from today. "
     "Answer in two concise bullet points and mention the source title if available."

@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🔄 Anthropic-Bedrock API Proxy
+# 🔄 Bedrock API Proxy
 
-**零代码迁移，让 Anthropic SDK 无缝对接 AWS Bedrock**
+**零代码迁移，让 Claude Code/Codex无缝对接 AWS Bedrock**
 
 [![License](https://img.shields.io/badge/license-MIT--0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://python.org)
@@ -25,11 +25,15 @@
 
 > ⚠️ **免责声明**：本项目仅作为示例代码，用于演示和学习目的，**不适用于生产环境**。请在部署到任何生产环境之前，自行进行充分的安全审查、测试和加固。
 
-这是一个轻量级的 API 转换服务，让你无需修改代码即可在 Anthropic SDK 中使用 AWS Bedrock 上的各种大语言模型。通过简单的环境变量配置，即可在 Claude Code、Claude Agent SDK 等工具中切换使用 Qwen3、DeepSeek 等不同模型。
+是一个轻量级的 API 转换服务，让你无需修改代码即可在 Anthropic SDK 中使用 AWS Bedrock 上的各种大语言模型，并提供Anthopic兼容的Code Execution/Dynamic Web Search/ PTC等服务端功能。 主要为Claude Code/Claude Agent SDK提供Proxy转接，并带可视化管理web实现api key分发，用量监控，限额管理等管理功能。现已经全面支持GPT on Bedrock，为Codex提供转接服务。
 
-> 📝 **AWS 官方博客**：[基于 Amazon Bedrock 与自建 ECS Docker Sandbox 实现 Agent 编程式工具调用](https://aws.amazon.com/cn/blogs/china/programmatic-tool-calling-agent-using-bedrock-and-ecs-docker-sandbox/)
+> 📝 **亚马逊云科技 全球英文博客**：[Implementing programmatic tool calling on Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/implementing-programmatic-tool-calling-on-amazon-bedrock)
 >
-> 📝 **AWS 官方博客**：[基于 Amazon Bedrock 实现动态过滤 Web Search 与 Web Fetch](https://aws.amazon.com/cn/blogs/china/based-on-amazon-bedrock-implement-dynamic-filtering-web-search-web-fetch/)
+> 📝 **亚马逊云科技 官方中文博客**：[基于 Amazon Bedrock 与自建 ECS Docker Sandbox 实现 Agent 编程式工具调用](https://aws.amazon.com/cn/blogs/china/programmatic-tool-calling-agent-using-bedrock-and-ecs-docker-sandbox/)
+>
+> 📝 **亚马逊云科技 官方中文博客**：[基于 Amazon Bedrock 实现动态过滤 Web Search 与 Web Fetch](https://aws.amazon.com/cn/blogs/china/based-on-amazon-bedrock-implement-dynamic-filtering-web-search-web-fetch/)
+
+
 
 **核心优势：**
 - 🔄 **零代码迁移** - 完全兼容 Anthropic API，无需修改现有代码
