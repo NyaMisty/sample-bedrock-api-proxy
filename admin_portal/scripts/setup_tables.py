@@ -40,6 +40,16 @@ DEFAULT_PRICING = [
         "status": "active",
     },
     {
+        "model_id": "global.anthropic.claude-fable-5",
+        "provider": "Anthropic",
+        "display_name": "Claude Fable 5",
+        "input_price": Decimal("10.00"),
+        "output_price": Decimal("50.00"),
+        "cache_read_price": Decimal("1.0"),
+        "cache_write_price": Decimal("12.5"),
+        "status": "active",
+    },
+    {
         "model_id": "global.anthropic.claude-opus-4-8",
         "provider": "Anthropic",
         "display_name": "Claude Opus 4.8",
