@@ -60,3 +60,5 @@ tests/
 *.log
 .mypy_cache/
 .ruff_cache/
+.codegraph/
+html_report/
