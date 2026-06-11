@@ -40,6 +40,16 @@ DEFAULT_PRICING = [
         "status": "active",
     },
     {
+        "model_id": "us.anthropic.claude-fable-5",
+        "provider": "Anthropic",
+        "display_name": "Claude Fable 5(US)",
+        "input_price": Decimal("11.00"),
+        "output_price": Decimal("55.00"),
+        "cache_read_price": Decimal("1.1"),
+        "cache_write_price": Decimal("13.75"),
+        "status": "active",
+    },
+    {
         "model_id": "global.anthropic.claude-fable-5",
         "provider": "Anthropic",
         "display_name": "Claude Fable 5",

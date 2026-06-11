@@ -175,6 +175,8 @@ class Settings(BaseSettings):
             # 1M-context aliases — same Bedrock target; the 1M window is
             # activated by the `anthropic-beta: context-1m-2025-08-07` header
             # that clients (e.g. Claude Code) attach to the request.
+            "claude-fable-5-us": "us.anthropic.claude-fable-5",
+            "claude-fable-5-us[1m]": "us.anthropic.claude-fable-5",
             "claude-fable-5[1m]": "global.anthropic.claude-fable-5",
             "claude-opus-4-8[1m]": "global.anthropic.claude-opus-4-8",
             "claude-opus-4-7[1m]": "global.anthropic.claude-opus-4-7",
