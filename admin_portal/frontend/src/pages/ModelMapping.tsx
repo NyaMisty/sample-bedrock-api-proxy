@@ -43,7 +43,7 @@ export default function ModelMappingPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreatePanel, setShowCreatePanel] = useState(false);
   const [editingMapping, setEditingMapping] = useState<ModelMapping | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<ModelMapping | null>(null);
 
   const { data, isLoading, error } = useModelMappings();
   const createMutation = useCreateModelMapping();
@@ -187,33 +187,47 @@ export default function ModelMappingPage() {
                       className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${
                         item.source === 'default'
                           ? 'bg-slate-700 text-slate-300'
-                          : 'bg-blue-500/20 text-blue-400'
+                          : item.source === 'override'
+                            ? 'bg-amber-500/20 text-amber-400'
+                            : 'bg-blue-500/20 text-blue-400'
                       }`}
+                      title={
+                        item.source === 'override' && item.default_bedrock_model_id
+                          ? `${t('modelMapping.defaultValue')}: ${item.default_bedrock_model_id}`
+                          : undefined
+                      }
                     >
                       {t(`modelMapping.sources.${item.source}`)}
                     </span>
                   </td>
                   <td className="px-6 py-4 text-right">
-                    {item.source === 'custom' ? (
-                      <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => setEditingMapping(item)}
+                        className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
+                        title={t('common.edit')}
+                      >
+                        <span className="material-symbols-outlined text-[18px]">edit</span>
+                      </button>
+                      {item.source === 'override' && (
                         <button
-                          onClick={() => setEditingMapping(item)}
-                          className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
-                          title={t('common.edit')}
+                          onClick={() => setDeleteConfirm(item)}
+                          className="p-2 text-slate-400 hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors"
+                          title={t('modelMapping.restoreDefault')}
                         >
-                          <span className="material-symbols-outlined text-[18px]">edit</span>
+                          <span className="material-symbols-outlined text-[18px]">history</span>
                         </button>
+                      )}
+                      {item.source === 'custom' && (
                         <button
-                          onClick={() => setDeleteConfirm(item.anthropic_model_id)}
+                          onClick={() => setDeleteConfirm(item)}
                           className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
                           title={t('common.delete')}
                         >
                           <span className="material-symbols-outlined text-[18px]">delete</span>
                         </button>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-slate-500">—</span>
-                    )}
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))
@@ -252,12 +266,21 @@ export default function ModelMappingPage() {
         )}
       </SlideOver>
 
-      {/* Delete Confirmation */}
+      {/* Delete / Restore Confirmation */}
       {deleteConfirm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-surface-dark border border-border-dark rounded-xl p-6 max-w-md w-full mx-4">
             <h3 className="text-lg font-semibold text-white mb-2">{t('common.confirm')}</h3>
-            <p className="text-slate-400 mb-6">{t('modelMapping.confirmDelete')}</p>
+            <p className="text-slate-400 mb-4">
+              {deleteConfirm.source === 'override'
+                ? t('modelMapping.confirmRestoreDefault')
+                : t('modelMapping.confirmDelete')}
+            </p>
+            {deleteConfirm.source === 'override' && deleteConfirm.default_bedrock_model_id && (
+              <code className="block text-sm text-slate-300 bg-slate-800 px-3 py-2 rounded mb-6 break-all">
+                {deleteConfirm.default_bedrock_model_id}
+              </code>
+            )}
             <div className="flex justify-end gap-3">
               <button
                 onClick={() => setDeleteConfirm(null)}
@@ -266,11 +289,19 @@ export default function ModelMappingPage() {
                 {t('common.cancel')}
               </button>
               <button
-                onClick={() => handleDelete(deleteConfirm)}
+                onClick={() => handleDelete(deleteConfirm.anthropic_model_id)}
                 disabled={deleteMutation.isPending}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:opacity-50"
+                className={`px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-50 ${
+                  deleteConfirm.source === 'override'
+                    ? 'bg-amber-600 hover:bg-amber-700'
+                    : 'bg-red-600 hover:bg-red-700'
+                }`}
               >
-                {deleteMutation.isPending ? t('common.loading') : t('common.delete')}
+                {deleteMutation.isPending
+                  ? t('common.loading')
+                  : deleteConfirm.source === 'override'
+                    ? t('modelMapping.restoreDefault')
+                    : t('common.delete')}
               </button>
             </div>
           </div>
@@ -331,6 +362,14 @@ function MappingForm({ initialData, onSubmit, onCancel, isLoading, isEdit }: Map
           placeholder={t('modelMapping.form.bedrockModelIdPlaceholder')}
           className="w-full px-4 py-2.5 bg-input-bg border border-border-dark rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
         />
+        {isEdit && (initialData?.source === 'default' || initialData?.source === 'override') && (
+          <p className="mt-2 text-xs text-slate-500">
+            {t('modelMapping.form.overrideHint')}{' '}
+            <code className="text-slate-400">
+              {initialData.default_bedrock_model_id ?? initialData.bedrock_model_id}
+            </code>
+          </p>
+        )}
       </div>
 
       <div className="flex justify-end gap-3 pt-4 border-t border-border-dark">

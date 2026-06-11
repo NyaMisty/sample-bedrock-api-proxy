@@ -21,7 +21,8 @@ class ModelMappingResponse(BaseModel):
 
     anthropic_model_id: str
     bedrock_model_id: str
-    source: Literal["default", "custom"]
+    source: Literal["default", "custom", "override"]
+    default_bedrock_model_id: Optional[str] = None
     updated_at: Optional[int] = None
 
     class Config:

@@ -228,7 +228,8 @@
     "source": "Source",
     "sources": {
       "default": "Default",
-      "custom": "Custom"
+      "custom": "Custom",
+      "override": "Overridden"
     },
     "form": {
       "createTitle": "Add New Mapping",
@@ -237,14 +238,16 @@
       "anthropicModelIdPlaceholder": "e.g., opus or claude-opus-4-5-20251101",
       "bedrockModelId": "Bedrock Model ID",
       "bedrockModelIdPlaceholder": "e.g., global.anthropic.claude-opus-4-5-20251101-v1:0",
-      "save": "Save Mapping"
+      "save": "Save Mapping",
+      "overrideHint": "Saving will override the default:"
     },
     "confirmDelete": "Are you sure you want to delete this mapping?",
     "mappingCreated": "Model mapping created successfully",
     "mappingUpdated": "Model mapping updated successfully",
     "mappingDeleted": "Model mapping deleted successfully",
-    "cannotEditDefault": "Default mappings cannot be edited. Create a custom override instead.",
-    "cannotDeleteDefault": "Default mappings cannot be deleted."
+    "defaultValue": "Default",
+    "restoreDefault": "Restore Default",
+    "confirmRestoreDefault": "Remove this override and restore the default mapping?"
   },
   "betaHeaders": {
     "title": "Beta Headers",
