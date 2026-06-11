@@ -54,13 +54,16 @@ async def list_model_mappings(
                 source="default",
             ))
 
-    # Add custom mappings
+    # Add custom mappings; ones that shadow a default are overrides
     for mapping in custom_mappings:
+        anthropic_id = mapping.get("anthropic_model_id", "")
+        default_bedrock_id = settings.default_model_mapping.get(anthropic_id)
         updated_at_val = mapping.get("updated_at")
         items.append(ModelMappingResponse(
-            anthropic_model_id=mapping.get("anthropic_model_id", ""),
+            anthropic_model_id=anthropic_id,
             bedrock_model_id=mapping.get("bedrock_model_id", ""),
-            source="custom",
+            source="override" if default_bedrock_id is not None else "custom",
+            default_bedrock_model_id=default_bedrock_id,
             updated_at=int(updated_at_val) if updated_at_val is not None else None,
         ))
 
@@ -73,8 +76,8 @@ async def list_model_mappings(
             or search_lower in item.bedrock_model_id.lower()
         ]
 
-    # Sort by source (default first) then by anthropic_model_id
-    items.sort(key=lambda x: (0 if x.source == "default" else 1, x.anthropic_model_id))
+    # Sort by source (default/override first) then by anthropic_model_id
+    items.sort(key=lambda x: (1 if x.source == "custom" else 0, x.anthropic_model_id))
 
     return ModelMappingListResponse(items=items, count=len(items))
 
@@ -90,6 +93,7 @@ async def get_model_mapping(anthropic_model_id: str):
     # Check custom mapping first
     bedrock_id = mapping_manager.get_mapping(anthropic_model_id)
     if bedrock_id:
+        default_bedrock_id = settings.default_model_mapping.get(anthropic_model_id)
         # Get full item for updated_at
         mappings = mapping_manager.list_mappings()
         for m in mappings:
@@ -98,7 +102,8 @@ async def get_model_mapping(anthropic_model_id: str):
                 return ModelMappingResponse(
                     anthropic_model_id=anthropic_model_id,
                     bedrock_model_id=bedrock_id,
-                    source="custom",
+                    source="override" if default_bedrock_id is not None else "custom",
+                    default_bedrock_model_id=default_bedrock_id,
                     updated_at=int(updated_at_val) if updated_at_val is not None else None,
                 )
 
@@ -136,6 +141,9 @@ async def create_model_mapping(request: ModelMappingCreate):
     # Create the mapping
     mapping_manager.set_mapping(request.anthropic_model_id, request.bedrock_model_id)
 
+    default_bedrock_id = settings.default_model_mapping.get(request.anthropic_model_id)
+    source = "override" if default_bedrock_id is not None else "custom"
+
     # Get the created item
     mappings = mapping_manager.list_mappings()
     for m in mappings:
@@ -144,43 +152,43 @@ async def create_model_mapping(request: ModelMappingCreate):
             return ModelMappingResponse(
                 anthropic_model_id=request.anthropic_model_id,
                 bedrock_model_id=request.bedrock_model_id,
-                source="custom",
+                source=source,
+                default_bedrock_model_id=default_bedrock_id,
                 updated_at=int(updated_at_val) if updated_at_val is not None else None,
             )
 
     return ModelMappingResponse(
         anthropic_model_id=request.anthropic_model_id,
         bedrock_model_id=request.bedrock_model_id,
-        source="custom",
+        source=source,
+        default_bedrock_model_id=default_bedrock_id,
     )
 
 
 @router.put("/{anthropic_model_id:path}", response_model=ModelMappingResponse)
 async def update_model_mapping(anthropic_model_id: str, request: ModelMappingUpdate):
     """
-    Update an existing custom model mapping.
+    Update a model mapping.
 
-    Cannot update default mappings - create a custom override instead.
+    Updating a custom mapping changes it in place. Updating a default
+    mapping writes a DynamoDB override (the default itself is config-defined
+    and stays intact; delete the override to restore it).
     """
     anthropic_model_id = unquote(anthropic_model_id)
     mapping_manager = get_manager()
 
-    # Check if custom mapping exists
     existing = mapping_manager.get_mapping(anthropic_model_id)
-    if not existing:
-        # Check if it's a default mapping
-        if anthropic_model_id in settings.default_model_mapping:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot update default mapping. Create a custom override with POST instead.",
-            )
+    default_bedrock_id = settings.default_model_mapping.get(anthropic_model_id)
+    if not existing and default_bedrock_id is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Custom mapping not found",
+            detail="Model mapping not found",
         )
 
-    # Update the mapping
+    # Update custom mapping in place, or write an override shadowing the default
     mapping_manager.set_mapping(anthropic_model_id, request.bedrock_model_id)
+
+    source = "override" if default_bedrock_id is not None else "custom"
 
     # Get updated item
     mappings = mapping_manager.list_mappings()
@@ -190,23 +198,26 @@ async def update_model_mapping(anthropic_model_id: str, request: ModelMappingUpd
             return ModelMappingResponse(
                 anthropic_model_id=anthropic_model_id,
                 bedrock_model_id=request.bedrock_model_id,
-                source="custom",
+                source=source,
+                default_bedrock_model_id=default_bedrock_id,
                 updated_at=int(updated_at_val) if updated_at_val is not None else None,
             )
 
     return ModelMappingResponse(
         anthropic_model_id=anthropic_model_id,
         bedrock_model_id=request.bedrock_model_id,
-        source="custom",
+        source=source,
+        default_bedrock_model_id=default_bedrock_id,
     )
 
 
 @router.delete("/{anthropic_model_id:path}")
 async def delete_model_mapping(anthropic_model_id: str):
     """
-    Delete a custom model mapping.
+    Delete a custom model mapping or override.
 
-    Cannot delete default mappings.
+    Deleting an override restores the config-defined default. Defaults
+    themselves cannot be deleted (they're defined in config.py / env).
     """
     anthropic_model_id = unquote(anthropic_model_id)
     mapping_manager = get_manager()
@@ -218,7 +229,8 @@ async def delete_model_mapping(anthropic_model_id: str):
         if anthropic_model_id in settings.default_model_mapping:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot delete default mapping",
+                detail="Cannot delete default mapping (defined in config). "
+                       "You can override it with PUT instead.",
             )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -226,4 +238,8 @@ async def delete_model_mapping(anthropic_model_id: str):
         )
 
     mapping_manager.delete_mapping(anthropic_model_id)
-    return {"message": "Mapping deleted successfully"}
+    restored = anthropic_model_id in settings.default_model_mapping
+    return {
+        "message": "Default mapping restored" if restored else "Mapping deleted successfully",
+        "restored_default": restored,
+    }

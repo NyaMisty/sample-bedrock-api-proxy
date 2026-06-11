@@ -1,7 +1,8 @@
 export interface ModelMapping {
   anthropic_model_id: string;
   bedrock_model_id: string;
-  source: 'default' | 'custom';
+  source: 'default' | 'custom' | 'override';
+  default_bedrock_model_id?: string;
   updated_at?: number;
 }
 

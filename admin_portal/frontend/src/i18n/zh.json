@@ -228,7 +228,8 @@
     "source": "来源",
     "sources": {
       "default": "默认",
-      "custom": "自定义"
+      "custom": "自定义",
+      "override": "已覆盖"
     },
     "form": {
       "createTitle": "添加新映射",
@@ -237,14 +238,16 @@
       "anthropicModelIdPlaceholder": "例如：opus 或 claude-opus-4-5-20251101",
       "bedrockModelId": "Bedrock 模型 ID",
       "bedrockModelIdPlaceholder": "例如：global.anthropic.claude-opus-4-5-20251101-v1:0",
-      "save": "保存映射"
+      "save": "保存映射",
+      "overrideHint": "保存后将覆盖默认值："
     },
     "confirmDelete": "确定要删除此映射吗？",
     "mappingCreated": "模型映射创建成功",
     "mappingUpdated": "模型映射更新成功",
     "mappingDeleted": "模型映射删除成功",
-    "cannotEditDefault": "无法编辑默认映射。请创建自定义覆盖。",
-    "cannotDeleteDefault": "无法删除默认映射。"
+    "defaultValue": "默认值",
+    "restoreDefault": "恢复默认",
+    "confirmRestoreDefault": "确定要移除此覆盖并恢复默认映射吗？"
   },
   "betaHeaders": {
     "title": "Beta Headers",
