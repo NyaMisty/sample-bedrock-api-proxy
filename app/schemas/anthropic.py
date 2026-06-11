@@ -434,6 +434,10 @@ class MessageRequest(BaseModel):
     # PTC container for session reuse (just the container ID string)
     container: Optional[str] = None
 
+    # Fallback credit redemption (fallback-credit-2026-06-09 beta):
+    # opaque token from a refusal's stop_details, echoed on the retry request
+    fallback_credit_token: Optional[str] = None
+
     @field_validator("system", mode="before")
     @classmethod
     def convert_system_string_to_list(cls, v):
@@ -471,9 +475,14 @@ class MessageResponse(BaseModel):
             "tool_use",
             "compaction",
             "pause_turn",
+            "refusal",
+            "model_context_window_exceeded",
         ]
     ] = None
     stop_sequence: Optional[str] = None
+    # Structured stop info (e.g. refusal category/explanation and the
+    # fallback_credit_token under the fallback-credit-2026-06-09 beta)
+    stop_details: Optional[Dict[str, Any]] = None
     usage: Usage
 
 
