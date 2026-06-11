@@ -19,3 +19,9 @@ tests_bak/
 node_modules/
 cdk/cdk.context.json
 .worktrees/
+
+# Local tool caches
+.codegraph/
+.mypy_cache/
+.ruff_cache/
+.github/
