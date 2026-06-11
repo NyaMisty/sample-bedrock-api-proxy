@@ -362,6 +362,7 @@ class StandaloneCodeExecutionService:
             model=request.model,
             stop_reason=final_response.stop_reason if final_response else "end_turn",
             stop_sequence=final_response.stop_sequence if final_response else None,
+            stop_details=final_response.stop_details if final_response else None,
             usage=Usage(
                 input_tokens=total_input_tokens,
                 output_tokens=total_output_tokens,
