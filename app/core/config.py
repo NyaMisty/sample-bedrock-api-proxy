@@ -255,7 +255,11 @@ class Settings(BaseSettings):
             "prompt-caching-scope-2026-01-05",
             "redact-thinking-2026-02-12",
             "advisor-tool-2026-03-01",
-            "thinking-token-count-2026-05-13"
+            "thinking-token-count-2026-05-13",
+            # Server-side fallbacks are not available on Bedrock (the
+            # `fallbacks` request param is dropped at validation), so filter
+            # the beta instead of forwarding it
+            "server-side-fallback-2026-06-01",
         ],
         alias="BETA_HEADERS_BLOCKLIST",
         description="Beta headers that should NOT be passed to Bedrock (unsupported)",

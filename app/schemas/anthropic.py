@@ -109,6 +109,22 @@ class CompactionContent(BaseModel):
     content: Optional[str] = None
 
 
+class FallbackContent(BaseModel):
+    """Fallback audit marker block (server-side fallbacks / refusal-fallback
+    SDK middleware). Marks where one model declined and another continued.
+    Ignored on input — the proxy strips it before forwarding to Bedrock."""
+
+    type: Literal["fallback"] = "fallback"
+    from_: Optional[Dict[str, Any]] = Field(None, alias="from")
+    to: Optional[Dict[str, Any]] = None
+
+    model_config = {"populate_by_name": True}
+
+    def model_dump(self, **kwargs):
+        kwargs.setdefault("by_alias", True)
+        return super().model_dump(**kwargs)
+
+
 class ToolReferenceContent(BaseModel):
     """Tool reference content block used in tool_result to reference available tools."""
 
@@ -262,6 +278,7 @@ ContentBlock = Union[
     ThinkingContent,
     RedactedThinkingContent,
     CompactionContent,
+    FallbackContent,
     ToolUseContent,
     ToolResultContent,
     ServerToolUseContent,  # PTC server tool use

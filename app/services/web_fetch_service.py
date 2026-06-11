@@ -1083,6 +1083,7 @@ class WebFetchService:
             model=request.model,
             stop_reason=final_response.stop_reason if final_response else "end_turn",
             stop_sequence=final_response.stop_sequence if final_response else None,
+            stop_details=final_response.stop_details if final_response else None,
             usage=Usage(
                 input_tokens=total_input_tokens,
                 output_tokens=total_output_tokens,
@@ -1244,6 +1245,7 @@ class WebFetchService:
     def _emit_message_end(
         self, stop_reason: str, output_tokens: int,
         fetch_count: int = 0,
+        stop_details: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         """Generate message_delta and message_stop events."""
         usage: Dict[str, Any] = {"output_tokens": output_tokens}
@@ -1254,6 +1256,8 @@ class WebFetchService:
             "stop_reason": stop_reason,
             "stop_sequence": None,
         }
+        if stop_details is not None:
+            delta["stop_details"] = stop_details
 
         message_delta: Dict[str, Any] = {
             "type": "message_delta",
@@ -1324,6 +1328,7 @@ class WebFetchService:
         total_output_tokens = 0
         fetch_count = 0
         final_stop_reason = "end_turn"
+        final_stop_details: Optional[Dict[str, Any]] = None
         emitted_message_start = False
 
         messages: List[Any] = list(request.messages)
@@ -1435,6 +1440,7 @@ class WebFetchService:
 
                 if is_final:
                     final_stop_reason = response.stop_reason or "end_turn"
+                    final_stop_details = response.stop_details
                     break
 
                 # Execute all intercepted tool calls and emit results
@@ -1511,7 +1517,9 @@ class WebFetchService:
                     logger.warning(f"[WebFetch Streaming] Failed to cleanup sandbox: {e}")
 
         # Emit final events
-        for event in self._emit_message_end(final_stop_reason, total_output_tokens, fetch_count):
+        for event in self._emit_message_end(
+            final_stop_reason, total_output_tokens, fetch_count, final_stop_details
+        ):
             yield event
 
 

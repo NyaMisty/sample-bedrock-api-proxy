@@ -342,6 +342,11 @@ class BedrockService:
                     # Bedrock doesn't understand server_tool_use, web_search_tool_result, etc.
                     block_type = block_dict.get("type", "")
 
+                    # Fallback audit markers (refusal-fallback flows) are
+                    # client-side bookkeeping — strip before forwarding.
+                    if block_type == "fallback":
+                        continue
+
                     # Web search server blocks in assistant messages: skip entirely.
                     # The text blocks already contain Claude's answer with full context.
                     # Keeping server_tool_use without matching tool_result would also error.
