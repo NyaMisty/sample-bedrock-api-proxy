@@ -547,6 +547,11 @@ class BedrockService:
         if request.context_management:
             native_request["context_management"] = request.context_management
 
+        # Forward fallback credit token (fallback-credit-2026-06-09 beta) so a
+        # retry after a refusal is repriced against the refused request's cache
+        if request.fallback_credit_token:
+            native_request["fallback_credit_token"] = request.fallback_credit_token
+
         # Auto-inject advanced-tool-use beta header if tools contain defer_loading
         # but the client didn't send the required beta header.
         # This prevents Bedrock from rejecting defer_loading with:
@@ -1079,6 +1084,7 @@ class BedrockService:
             model=model,
             stop_reason=response_body.get("stop_reason"),
             stop_sequence=response_body.get("stop_sequence"),
+            stop_details=response_body.get("stop_details"),
             usage=usage
         )
 
