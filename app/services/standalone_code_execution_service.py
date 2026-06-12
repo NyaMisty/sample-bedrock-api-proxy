@@ -301,6 +301,7 @@ class StandaloneCodeExecutionService:
                 tool_choice=request.tool_choice,
                 thinking=request.thinking,
                 metadata=request.metadata,
+                output_config=request.output_config,
             )
 
             # Call Bedrock (without the standalone beta header)
@@ -706,6 +707,7 @@ class StandaloneCodeExecutionService:
                     tool_choice=request.tool_choice,
                     thinking=request.thinking,
                     metadata=request.metadata,
+                    output_config=request.output_config,
                 )
 
                 # Call Bedrock non-streaming
