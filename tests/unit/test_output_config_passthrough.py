@@ -1,5 +1,6 @@
-"""Regression tests: output_config must be forwarded to Bedrock on the
-standalone code execution loop and PTC continuation/finalization paths."""
+"""Regression tests: output_config (and context_management on the standalone
+path) must be forwarded to Bedrock on the standalone code execution loop and
+PTC continuation/finalization paths."""
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -36,7 +37,7 @@ def test_ptc_execution_state_preserves_original_output_config():
     assert state.original_output_config == {"effort": "max"}
 
 
-async def test_standalone_loop_forwards_output_config():
+async def test_standalone_loop_forwards_output_config_and_context_management():
     from app.services.standalone_code_execution_service import (
         StandaloneCodeExecutionService,
     )
@@ -48,12 +49,14 @@ async def test_standalone_loop_forwards_output_config():
         captured.append(req)
         return _end_turn_response(req.model)
 
+    context_management = {"edits": [{"type": "context_compaction_20260112"}]}
     request = MessageRequest(
         model="claude-sonnet-4-5",
         max_tokens=128,
         messages=[{"role": "user", "content": "hi"}],
         tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
         output_config={"effort": "low"},
+        context_management=context_management,
     )
 
     with patch.object(
@@ -68,6 +71,7 @@ async def test_standalone_loop_forwards_output_config():
 
     assert captured, "Bedrock was never called"
     assert captured[0].output_config == {"effort": "low"}
+    assert captured[0].context_management == context_management
 
 
 async def test_ptc_finalize_forwards_output_config_from_state():
