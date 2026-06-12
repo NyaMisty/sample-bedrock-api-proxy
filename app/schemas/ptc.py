@@ -189,6 +189,7 @@ class PTCExecutionState(BaseModel):
     original_stop_sequences: Optional[List[str]] = None
     original_tool_choice: Optional[Any] = None
     original_thinking: Optional[Dict[str, Any]] = None
+    original_output_config: Optional[Dict[str, Any]] = None
     original_anthropic_beta: Optional[str] = None  # Original beta header
     # Preserve Claude's original response content (including thinking blocks)
     original_assistant_content: Optional[List[Any]] = None

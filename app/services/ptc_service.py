@@ -1051,6 +1051,7 @@ Before writing code, verify:
                         original_stop_sequences=original_request.stop_sequences,
                         original_tool_choice=original_request.tool_choice,
                         original_thinking=original_request.thinking,
+                        original_output_config=original_request.output_config,
                         original_anthropic_beta=anthropic_beta,
                         # Preserve original assistant content (including thinking blocks)
                         original_assistant_content=original_assistant_content,
@@ -1099,6 +1100,7 @@ Before writing code, verify:
                         original_stop_sequences=original_request.stop_sequences,
                         original_tool_choice=original_request.tool_choice,
                         original_thinking=original_request.thinking,
+                        original_output_config=original_request.output_config,
                         original_anthropic_beta=anthropic_beta,
                         # Preserve original assistant content (including thinking blocks)
                         original_assistant_content=original_assistant_content,
@@ -1481,6 +1483,10 @@ Before writing code, verify:
             execution_state.original_thinking if execution_state and execution_state.original_thinking
             else original_request.thinking
         )
+        effective_output_config = (
+            execution_state.original_output_config if execution_state and execution_state.original_output_config
+            else original_request.output_config
+        )
         effective_anthropic_beta = (
             execution_state.original_anthropic_beta if execution_state and execution_state.original_anthropic_beta
             else None
@@ -1656,6 +1662,7 @@ Before writing code, verify:
             tools=self.prepare_bedrock_request(original_request, ptc_callable_tools).tools,
             tool_choice=effective_tool_choice,
             thinking=effective_thinking,
+            output_config=effective_output_config,
         )
 
         # Debug: Verify MessageRequest didn't reorder content after Pydantic validation
@@ -1696,6 +1703,7 @@ Before writing code, verify:
                 tools=self.prepare_bedrock_request(original_request, ptc_callable_tools).tools,
                 tool_choice=effective_tool_choice,
                 thinking=effective_thinking,
+                output_config=effective_output_config,
             )
             return await self._handle_code_execution(
                 next_execute_code,
@@ -1851,6 +1859,7 @@ Before writing code, verify:
             tools=self.prepare_bedrock_request(original_request, ptc_callable_tools).tools,
             tool_choice=original_request.tool_choice,
             thinking=original_request.thinking,
+            output_config=original_request.output_config,
         )
 
         # Call Bedrock again
@@ -2141,6 +2150,7 @@ Before writing code, verify:
             tools=self.prepare_bedrock_request(original_request, ptc_callable_tools).tools,
             tool_choice=original_request.tool_choice,
             thinking=original_request.thinking,
+            output_config=original_request.output_config,
         )
 
         # Call Bedrock again (with beta header)
@@ -2559,6 +2569,7 @@ Before writing code, verify:
                             original_stop_sequences=bedrock_request.stop_sequences,
                             original_tool_choice=bedrock_request.tool_choice,
                             original_thinking=bedrock_request.thinking,
+                            original_output_config=bedrock_request.output_config,
                             original_anthropic_beta=anthropic_beta,
                             original_assistant_content=original_assistant_content,
                             original_execute_code_id=original_execute_code_id,
@@ -2603,6 +2614,7 @@ Before writing code, verify:
                             original_stop_sequences=bedrock_request.stop_sequences,
                             original_tool_choice=bedrock_request.tool_choice,
                             original_thinking=bedrock_request.thinking,
+                            original_output_config=bedrock_request.output_config,
                             original_anthropic_beta=anthropic_beta,
                             original_assistant_content=original_assistant_content,
                             original_execute_code_id=original_execute_code_id,
@@ -2893,6 +2905,7 @@ Before writing code, verify:
             tools=self.prepare_bedrock_request(original_request, ptc_callable_tools).tools,
             tool_choice=original_request.tool_choice,
             thinking=original_request.thinking,
+            output_config=original_request.output_config,
         )
 
         # Call Bedrock
@@ -2966,6 +2979,7 @@ Before writing code, verify:
         effective_stop_sequences = execution_state.original_stop_sequences or original_request.stop_sequences
         effective_tool_choice = execution_state.original_tool_choice or original_request.tool_choice
         effective_thinking = execution_state.original_thinking or original_request.thinking
+        effective_output_config = execution_state.original_output_config or original_request.output_config
         effective_anthropic_beta = execution_state.original_anthropic_beta
 
         # Build messages
@@ -3049,6 +3063,7 @@ Before writing code, verify:
             tools=self.prepare_bedrock_request(original_request, ptc_callable_tools).tools,
             tool_choice=effective_tool_choice,
             thinking=effective_thinking,
+            output_config=effective_output_config,
         )
 
         # Call Bedrock
@@ -3136,6 +3151,7 @@ Before writing code, verify:
                             original_stop_sequences=execution_state.original_stop_sequences,
                             original_tool_choice=execution_state.original_tool_choice,
                             original_thinking=execution_state.original_thinking,
+                            original_output_config=execution_state.original_output_config,
                             original_anthropic_beta=effective_anthropic_beta,
                             original_assistant_content=new_assistant_content,
                             original_execute_code_id=next_execute_code.get("id"),
@@ -3180,6 +3196,7 @@ Before writing code, verify:
                             original_stop_sequences=execution_state.original_stop_sequences,
                             original_tool_choice=execution_state.original_tool_choice,
                             original_thinking=execution_state.original_thinking,
+                            original_output_config=execution_state.original_output_config,
                             original_anthropic_beta=effective_anthropic_beta,
                             original_assistant_content=new_assistant_content,
                             original_execute_code_id=next_execute_code.get("id"),
@@ -3233,6 +3250,7 @@ Before writing code, verify:
                             original_stop_sequences=execution_state.original_stop_sequences,
                             original_tool_choice=execution_state.original_tool_choice,
                             original_thinking=execution_state.original_thinking,
+                            original_output_config=execution_state.original_output_config,
                             original_anthropic_beta=effective_anthropic_beta,
                             original_assistant_content=new_assistant_content,
                             original_execute_code_id=next_execute_code.get("id"),
