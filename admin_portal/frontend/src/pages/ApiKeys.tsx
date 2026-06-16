@@ -11,7 +11,7 @@ import {
   useProviders,
 } from '../hooks';
 import type { ApiKey, ApiKeyCreate, ApiKeyUpdate } from '../types';
-import { formatTokens } from '../utils';
+import { formatTokens, cacheHitRate, formatCacheHitRate } from '../utils';
 
 // Modal Component
 function Modal({
@@ -301,26 +301,35 @@ export default function ApiKeys() {
       return;
     }
 
-    const headers = ['API Key', 'Name', 'Owner', 'User ID', 'Status', 'Monthly Budget', 'Budget Used (MTD)', 'Budget Used (Total)', 'Rate Limit', 'Service Tier', 'Cache TTL', 'Created At', 'Total Requests', 'Total Input Tokens', 'Total Output Tokens', 'Total Cached Tokens'];
-    
-    const rows = apiKeys.map((key) => [
-      key.api_key,
-      key.name,
-      key.owner_name || key.user_id,
-      key.user_id,
-      key.is_active ? 'Active' : 'Inactive',
-      key.monthly_budget || 0,
-      key.budget_used_mtd || 0,
-      key.budget_used || 0,
-      key.rate_limit || 0,
-      key.service_tier || 'default',
-      key.cache_ttl || 'default',
-      new Date((key.created_at as number) * 1000).toISOString(),
-      key.total_requests || 0,
-      key.total_input_tokens || 0,
-      key.total_output_tokens || 0,
-      key.total_cached_tokens || 0,
-    ]);
+    const headers = ['API Key', 'Name', 'Owner', 'User ID', 'Status', 'Monthly Budget', 'Budget Used (MTD)', 'Budget Used (Total)', 'Rate Limit', 'Service Tier', 'Cache TTL', 'Created At', 'Total Requests', 'Total Input Tokens', 'Total Output Tokens', 'Total Cached Tokens', 'Total Cache Write Tokens', 'Cache Hit Rate (%)'];
+
+    const rows = apiKeys.map((key) => {
+      const hitRate = cacheHitRate(
+        key.total_cached_tokens,
+        key.total_cache_write_tokens,
+        key.total_input_tokens
+      );
+      return [
+        key.api_key,
+        key.name,
+        key.owner_name || key.user_id,
+        key.user_id,
+        key.is_active ? 'Active' : 'Inactive',
+        key.monthly_budget || 0,
+        key.budget_used_mtd || 0,
+        key.budget_used || 0,
+        key.rate_limit || 0,
+        key.service_tier || 'default',
+        key.cache_ttl || 'default',
+        new Date((key.created_at as number) * 1000).toISOString(),
+        key.total_requests || 0,
+        key.total_input_tokens || 0,
+        key.total_output_tokens || 0,
+        key.total_cached_tokens || 0,
+        key.total_cache_write_tokens || 0,
+        hitRate === null ? '' : hitRate.toFixed(1),
+      ];
+    });
 
     const csvContent = [
       headers.join(','),
@@ -636,6 +645,13 @@ export default function ApiKeys() {
                     ? Math.round((mtdBudget / key.monthly_budget) * 100)
                     : 0;
 
+                  // Prompt cache hit rate: cacheRead / (cacheRead + cacheWrite + input)
+                  const hitRate = cacheHitRate(
+                    key.total_cached_tokens,
+                    key.total_cache_write_tokens,
+                    key.total_input_tokens
+                  );
+
                   return (
                     <tr
                       key={key.api_key}
@@ -719,6 +735,25 @@ export default function ApiKeys() {
                               {formatTokens(key.total_cache_write_tokens)}
                             </span>
                             <span className="text-xs text-slate-500">{t('apiKeys.cacheWrite')}</span>
+                          </div>
+                          <div className="flex items-center gap-2" title={t('apiKeys.cacheHitRateTooltip')}>
+                            <span className="material-symbols-outlined text-[14px] text-cyan-400">
+                              speed
+                            </span>
+                            <span
+                              className={`text-xs font-semibold ${
+                                hitRate === null
+                                  ? 'text-slate-400'
+                                  : hitRate >= 70
+                                  ? 'text-emerald-400'
+                                  : hitRate >= 40
+                                  ? 'text-amber-400'
+                                  : 'text-red-400'
+                              }`}
+                            >
+                              {formatCacheHitRate(hitRate)}
+                            </span>
+                            <span className="text-xs text-slate-500">{t('apiKeys.cacheHitRate')}</span>
                           </div>
                           <span className="text-[10px] text-slate-500">
                             {(key.total_requests || 0).toLocaleString()} {t('apiKeys.requests')}

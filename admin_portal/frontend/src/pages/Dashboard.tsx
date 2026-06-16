@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { useDashboardStats } from '../hooks';
-import { formatTokens } from '../utils';
+import { formatTokens, cacheHitRate, formatCacheHitRate } from '../utils';
 
 export default function Dashboard() {
   const { t } = useTranslation();
@@ -31,6 +31,13 @@ export default function Dashboard() {
   const budgetPercent = stats
     ? Math.round((stats.total_budget_used / Math.max(stats.total_budget, 1)) * 100)
     : 0;
+
+  // Overall prompt cache hit rate: cacheRead / (cacheRead + cacheWrite + input)
+  const overallHitRate = cacheHitRate(
+    stats?.total_cached_tokens,
+    stats?.total_cache_write_tokens,
+    stats?.total_input_tokens
+  );
 
   return (
     <div className="flex flex-col gap-8">
@@ -131,7 +138,7 @@ export default function Dashboard() {
           <span className="text-slate-400 text-sm font-medium">{t('dashboard.totalTokenUsage')}</span>
           <span className="material-symbols-outlined text-cyan-500">token</span>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2">
               <span className="material-symbols-outlined text-[16px] text-emerald-500">arrow_upward</span>
@@ -166,6 +173,25 @@ export default function Dashboard() {
               <span className="text-xs text-slate-400">{t('apiKeys.requests')}</span>
             </div>
             <span className="text-lg font-bold text-white">{(stats?.total_requests || 0).toLocaleString()}</span>
+          </div>
+          <div className="flex flex-col gap-1" title={t('apiKeys.cacheHitRateTooltip')}>
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-[16px] text-cyan-400">speed</span>
+              <span className="text-xs text-slate-400">{t('apiKeys.cacheHitRate')}</span>
+            </div>
+            <span
+              className={`text-lg font-bold ${
+                overallHitRate === null
+                  ? 'text-white'
+                  : overallHitRate >= 70
+                  ? 'text-emerald-400'
+                  : overallHitRate >= 40
+                  ? 'text-amber-400'
+                  : 'text-red-400'
+              }`}
+            >
+              {formatCacheHitRate(overallHitRate)}
+            </span>
           </div>
         </div>
       </div>
