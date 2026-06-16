@@ -2,6 +2,13 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../hooks';
 
+// localStorage keys for the "remember me" feature. Only the username is persisted —
+// the password is left to the browser's native password manager (the login form uses
+// the standard autocomplete attributes), which stores it far more securely than
+// localStorage ever could.
+const REMEMBER_FLAG_KEY = 'rememberCredentials';
+const SAVED_USERNAME_KEY = 'savedUsername';
+
 export default function Login() {
   const { t, i18n } = useTranslation();
   const {
@@ -17,8 +24,13 @@ export default function Login() {
     completeResetPassword,
     cancelResetPassword,
   } = useAuth();
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = useState(
+    () => localStorage.getItem(SAVED_USERNAME_KEY) || ''
+  );
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(
+    () => localStorage.getItem(REMEMBER_FLAG_KEY) === 'true'
+  );
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -44,6 +56,17 @@ export default function Login() {
     e.preventDefault();
     setPasswordError(null);
     clearSessionExpired(); // Clear any session expired message on login attempt
+
+    // Persist or clear the saved username based on the "remember me" choice. The
+    // password is intentionally not stored — the browser's password manager handles it.
+    if (rememberMe) {
+      localStorage.setItem(REMEMBER_FLAG_KEY, 'true');
+      localStorage.setItem(SAVED_USERNAME_KEY, username);
+    } else {
+      localStorage.removeItem(REMEMBER_FLAG_KEY);
+      localStorage.removeItem(SAVED_USERNAME_KEY);
+    }
+
     await login(username, password);
   };
 
@@ -565,6 +588,17 @@ export default function Login() {
                       </span>
                     </button>
                   </div>
+                </label>
+
+                {/* Remember Me */}
+                <label className="flex items-center gap-2 cursor-pointer select-none -mt-1">
+                  <input
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                    className="size-4 rounded border-border-dark bg-input-bg text-primary focus:ring-2 focus:ring-primary/50 cursor-pointer"
+                  />
+                  <span className="text-gray-300 text-sm">{t('auth.rememberMe')}</span>
                 </label>
 
                 {/* Error Message */}

@@ -57,3 +57,43 @@ export function formatNumber(value: number | undefined | null): string {
 export function formatCurrency(value: number | undefined | null, decimals: number = 2): string {
   return `$${(value || 0).toFixed(decimals)}`;
 }
+
+/**
+ * Compute the prompt cache hit rate as a percentage (0-100).
+ *
+ * Formula: cacheRead / (cacheRead + cacheWrite + input)
+ *
+ * Here `input` is the cache-exclusive (uncached) input token count, so the
+ * denominator is the total number of prompt-side tokens processed. Returns
+ * `null` when there were no prompt-side tokens at all (avoids divide-by-zero),
+ * which callers can render as a placeholder (e.g. "—").
+ *
+ * @param cacheRead - Cache read (cached) input tokens
+ * @param cacheWrite - Cache write (cache creation) tokens
+ * @param input - Uncached input tokens
+ * @returns Hit rate percentage (0-100), or null when no prompt tokens exist
+ */
+export function cacheHitRate(
+  cacheRead: number | undefined | null,
+  cacheWrite: number | undefined | null,
+  input: number | undefined | null
+): number | null {
+  const read = cacheRead || 0;
+  const write = cacheWrite || 0;
+  const inp = input || 0;
+  const denominator = read + write + inp;
+  if (denominator <= 0) return null;
+  return (read / denominator) * 100;
+}
+
+/**
+ * Format a prompt cache hit rate for display.
+ *
+ * @param rate - Hit rate percentage (0-100) or null
+ * @param decimals - Number of decimal places (default: 1)
+ * @returns Formatted string like "85.3%", or "—" when rate is null
+ */
+export function formatCacheHitRate(rate: number | null, decimals: number = 1): string {
+  if (rate === null) return '—';
+  return `${rate.toFixed(decimals)}%`;
+}
