@@ -160,6 +160,23 @@ export class ECSStack extends cdk.Stack {
       })
     );
 
+    if (config.webSearchProvider?.toLowerCase() === 'agentcore') {
+      taskRole.addToPolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['bedrock-agentcore:InvokeGateway'],
+          resources: [
+            this.formatArn({
+              service: 'bedrock-agentcore',
+              region: config.agentcoreGatewayRegion || 'us-east-1',
+              resource: 'gateway',
+              resourceName: '*',
+            }),
+          ],
+        })
+      );
+    }
+
     // Grant CloudWatch Logs permissions
     taskRole.addToPolicy(
       new iam.PolicyStatement({
@@ -274,6 +291,8 @@ export class ECSStack extends cdk.Stack {
       ...(config.webSearchApiKey && { WEB_SEARCH_API_KEY: config.webSearchApiKey }),
       ...(config.webSearchMaxResults && { WEB_SEARCH_MAX_RESULTS: config.webSearchMaxResults.toString() }),
       ...(config.webSearchDefaultMaxUses && { WEB_SEARCH_DEFAULT_MAX_USES: config.webSearchDefaultMaxUses.toString() }),
+      ...(config.agentcoreGatewayUrl && { AGENTCORE_GATEWAY_URL: config.agentcoreGatewayUrl }),
+      ...(config.agentcoreGatewayRegion && { AGENTCORE_GATEWAY_REGION: config.agentcoreGatewayRegion }),
 
       // Web Fetch
       ENABLE_WEB_FETCH: config.enableWebFetch.toString(),

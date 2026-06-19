@@ -61,10 +61,12 @@ export interface EnvironmentConfig {
 
   // Web Search Configuration
   enableWebSearch: boolean;
-  webSearchProvider?: string;              // 'tavily' or 'brave'
+  webSearchProvider?: string;              // 'tavily', 'brave', or 'agentcore'
   webSearchApiKey?: string;                // Search provider API key
   webSearchMaxResults?: number;            // Max results per search (default: 5)
   webSearchDefaultMaxUses?: number;        // Max searches per request (default: 10)
+  agentcoreGatewayUrl?: string;                // AgentCore Gateway MCP URL for web search
+  agentcoreGatewayRegion?: string;             // AgentCore Gateway region (currently us-east-1)
 
   // Web Fetch Configuration
   enableWebFetch: boolean;
@@ -448,6 +450,8 @@ export function getConfig(environmentName: string = 'dev'): EnvironmentConfig {
     ...(process.env.WEB_SEARCH_API_KEY && { webSearchApiKey: process.env.WEB_SEARCH_API_KEY }),
     ...(process.env.WEB_SEARCH_MAX_RESULTS && { webSearchMaxResults: parseInt(process.env.WEB_SEARCH_MAX_RESULTS) }),
     ...(process.env.WEB_SEARCH_DEFAULT_MAX_USES && { webSearchDefaultMaxUses: parseInt(process.env.WEB_SEARCH_DEFAULT_MAX_USES) }),
+    ...(process.env.AGENTCORE_GATEWAY_URL && { agentcoreGatewayUrl: process.env.AGENTCORE_GATEWAY_URL }),
+    ...(process.env.AGENTCORE_GATEWAY_REGION && { agentcoreGatewayRegion: process.env.AGENTCORE_GATEWAY_REGION }),
     ...(process.env.WEB_FETCH_DEFAULT_MAX_USES && { webFetchDefaultMaxUses: parseInt(process.env.WEB_FETCH_DEFAULT_MAX_USES) }),
     ...(process.env.WEB_FETCH_DEFAULT_MAX_CONTENT_TOKENS && { webFetchDefaultMaxContentTokens: parseInt(process.env.WEB_FETCH_DEFAULT_MAX_CONTENT_TOKENS) }),
     ...(process.env.DEFAULT_CACHE_TTL && { defaultCacheTtl: process.env.DEFAULT_CACHE_TTL }),

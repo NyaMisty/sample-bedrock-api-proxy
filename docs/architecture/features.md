@@ -207,15 +207,17 @@ The proxy implements Anthropic's `web_search_20250305` and `web_search_20260209`
 ### Key Files
 
 - `app/services/web_search_service.py` - Main orchestration, agentic loop
-- `app/services/web_search/providers.py` - Tavily and Brave search implementations
+- `app/services/web_search/providers.py` - Tavily, Brave, and AgentCore Gateway search implementations
 - `app/services/web_search/domain_filter.py` - Domain filtering logic
 - `app/schemas/web_search.py` - Pydantic models (WebSearchToolDefinition, UserLocation, etc.)
 
 ### Configuration
 
 - `ENABLE_WEB_SEARCH=True` - Feature flag
-- `WEB_SEARCH_PROVIDER=tavily` - Provider (`tavily` or `brave`)
-- `WEB_SEARCH_API_KEY` - Provider API key (Tavily or Brave)
+- `WEB_SEARCH_PROVIDER=tavily` - Provider (`tavily`, `brave`, or `agentcore`)
+- `WEB_SEARCH_API_KEY` - Provider API key (Tavily or Brave; not used for AgentCore)
+- `AGENTCORE_GATEWAY_URL` - AgentCore Gateway MCP URL when `WEB_SEARCH_PROVIDER=agentcore`
+- `AGENTCORE_GATEWAY_REGION=us-east-1` - AgentCore Web Search region (currently us-east-1 only)
 - `WEB_SEARCH_MAX_RESULTS=5` - Max results per search
 - `WEB_SEARCH_DEFAULT_MAX_USES=10` - Max searches per request
 

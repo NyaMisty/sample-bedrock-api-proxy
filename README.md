@@ -157,7 +157,7 @@ MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-east-2.api.aws/openai/v1 \
 ./scripts/deploy.sh -e prod -r us-west-2 -p arm64 -l ec2
 ```
 
-Deployment takes ~15-20 minutes. See [CDK Deployment Guide](cdk/DEPLOYMENT.md) for full details.
+Deployment takes ~15-20 minutes. See [CDK Deployment Guide](cdk/DEPLOYMENT.md) for full details. For AgentCore web search, run `AWS_REGION=us-east-1 uv run bash scripts/create_agentcore.sh` in `us-east-1`, then deploy with `WEB_SEARCH_PROVIDER=agentcore` and `AGENTCORE_GATEWAY_URL=<gateway-mcp-url>` instead of `WEB_SEARCH_API_KEY`.
 
 #### Post-Deployment
 

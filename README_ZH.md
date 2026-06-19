@@ -160,7 +160,7 @@ MANTLE_ENDPOINT_URL=https://bedrock-mantle.us-east-2.api.aws/openai/v1 \
 ./scripts/deploy.sh -e prod -r us-west-2 -p arm64 -l ec2
 ```
 
-部署约需 15-20 分钟。完整说明参见 [CDK 部署指南](cdk/DEPLOYMENT.md)。
+部署约需 15-20 分钟。完整说明参见 [CDK 部署指南](cdk/DEPLOYMENT.md)。如使用 AgentCore web search，请先在 `us-east-1` 运行 `AWS_REGION=us-east-1 uv run bash scripts/create_agentcore.sh`，然后用 `WEB_SEARCH_PROVIDER=agentcore` 和 `AGENTCORE_GATEWAY_URL=<gateway-mcp-url>` 部署，不需要 `WEB_SEARCH_API_KEY`。
 
 #### 部署后操作
 
