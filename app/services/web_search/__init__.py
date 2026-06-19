@@ -5,6 +5,7 @@ from app.services.web_search.providers import (
     SearchResult,
     TavilySearchProvider,
     BraveSearchProvider,
+    AgentCoreSearchProvider,
     create_search_provider,
 )
 from app.services.web_search.domain_filter import DomainFilter

@@ -377,7 +377,7 @@ class Settings(BaseSettings):
     web_search_provider: str = Field(
         default="tavily",
         alias="WEB_SEARCH_PROVIDER",
-        description="Search provider: 'tavily' or 'brave'"
+        description="Search provider: 'tavily', 'brave', or 'agentcore'"
     )
     web_search_api_key: Optional[str] = Field(
         default=None,
@@ -393,6 +393,16 @@ class Settings(BaseSettings):
         default=10,
         alias="WEB_SEARCH_DEFAULT_MAX_USES",
         description="Default maximum number of web searches per request"
+    )
+    agentcore_gateway_url: Optional[str] = Field(
+        default=None,
+        alias="AGENTCORE_GATEWAY_URL",
+        description="AgentCore Gateway MCP URL for WEB_SEARCH_PROVIDER=agentcore"
+    )
+    agentcore_gateway_region: str = Field(
+        default="us-east-1",
+        alias="AGENTCORE_GATEWAY_REGION",
+        description="AWS region for AgentCore Gateway web search"
     )
 
     # Web Fetch Settings
