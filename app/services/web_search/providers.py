@@ -218,6 +218,9 @@ class AgentCoreSearchProvider(SearchProvider):
         self.gateway_url = gateway_url
         self.region = region
         self._client: Any | None = None
+        # AgentCore Gateway namespaces MCP tool names as "{target}___{toolName}".
+        # The concrete name is discovered at runtime via tools/list and cached here.
+        self._resolved_tool_name: str | None = None
 
     @property
     def client(self):
@@ -302,6 +305,67 @@ class AgentCoreSearchProvider(SearchProvider):
 
         return []
 
+    async def _list_tools(self) -> list[dict[str, Any]]:
+        """Fetch the tools advertised by the AgentCore Gateway via tools/list."""
+        request = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "tools/list",
+            "params": {},
+        }
+        payload = json.dumps(request).encode("utf-8")
+        headers = self._signed_headers(payload)
+
+        response = await self.client.post(
+            self.gateway_url,
+            content=payload,
+            headers=headers,
+        )
+        if response.status_code >= 400:
+            response.raise_for_status()
+
+        data = self._json_from_response_text(response.text)
+        if "error" in data:
+            message = data.get("error", {}).get("message", "unknown MCP error")
+            raise ValueError(f"AgentCore Gateway tools/list failed: {message}")
+
+        result = data.get("result", data)
+        tools = result.get("tools", [])
+        return [t for t in tools if isinstance(t, dict)]
+
+    async def _resolve_tool_name(self) -> str:
+        """
+        Resolve the concrete WebSearch tool name exposed by the Gateway.
+
+        AgentCore Gateway namespaces MCP tool names as ``{target}___{toolName}``
+        (e.g. ``web-search-tool___WebSearch``), so the bare ``WebSearch`` name the
+        proxy expects will not match. We discover the real name once via
+        tools/list and cache it for subsequent calls.
+        """
+        if self._resolved_tool_name:
+            return self._resolved_tool_name
+
+        tools = await self._list_tools()
+        names = [t.get("name", "") for t in tools if t.get("name")]
+
+        # Prefer an exact match, then a namespaced "{target}___WebSearch" match,
+        # then any tool whose name ends with the expected tool name.
+        suffix = f"___{self.TOOL_NAME}"
+        candidates = (
+            [n for n in names if n == self.TOOL_NAME]
+            + [n for n in names if n.endswith(suffix)]
+            + [n for n in names if n.endswith(self.TOOL_NAME)]
+        )
+        for name in candidates:
+            self._resolved_tool_name = name
+            logger.info("[WebSearch/AgentCore] Resolved tool name: %s", name)
+            return name
+
+        raise ValueError(
+            f"AgentCore Gateway does not expose a '{self.TOOL_NAME}' tool. "
+            f"Available tools: {names}"
+        )
+
     async def search(
         self,
         query: str,
@@ -320,12 +384,13 @@ class AgentCoreSearchProvider(SearchProvider):
                 len(query),
             )
 
+        tool_name = await self._resolve_tool_name()
         request = {
             "jsonrpc": "2.0",
             "id": str(uuid.uuid4()),
             "method": "tools/call",
             "params": {
-                "name": self.TOOL_NAME,
+                "name": tool_name,
                 "arguments": {
                     "query": search_query,
                     "maxResults": max(1, min(max_results, 25)),
