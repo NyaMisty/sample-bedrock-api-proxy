@@ -4,6 +4,7 @@ Search provider interface and implementations.
 Supports Tavily, Brave Search, and AgentCore Gateway Web Search providers.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -207,6 +208,11 @@ class AgentCoreSearchProvider(SearchProvider):
     us-east-1 only.
     """
 
+    # Base name of the AgentCore Web Search connector tool. The Gateway namespaces
+    # tools as "{TARGET_NAME}___{toolName}", so the name actually exposed by a
+    # Gateway depends on the target name chosen at setup time (default
+    # "web-search-tool"). The real name is discovered at runtime via tools/list
+    # rather than hardcoded — see _discover_tool_name.
     TOOL_NAME = "WebSearch"
     SERVICE_NAME = "bedrock-agentcore"
 
@@ -218,6 +224,8 @@ class AgentCoreSearchProvider(SearchProvider):
         self.gateway_url = gateway_url
         self.region = region
         self._client: Any | None = None
+        self._tool_name: str | None = None
+        self._tool_name_lock = asyncio.Lock()
 
     @property
     def client(self):
@@ -275,6 +283,87 @@ class AgentCoreSearchProvider(SearchProvider):
             raise ValueError("AgentCore Gateway response did not contain JSON data")
         return json.loads(data_frames[-1])
 
+    async def _invoke_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Send a signed JSON-RPC request to the Gateway and parse the response."""
+        request = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": method,
+            "params": params,
+        }
+        payload = json.dumps(request).encode("utf-8")
+        headers = self._signed_headers(payload)
+
+        response = await self.client.post(
+            self.gateway_url,
+            content=payload,
+            headers=headers,
+        )
+        if response.status_code >= 400:
+            response.raise_for_status()
+
+        return self._json_from_response_text(response.text)
+
+    @classmethod
+    def _select_tool_name(cls, tools: list[dict[str, Any]]) -> str | None:
+        """Pick the WebSearch tool name from a tools/list result.
+
+        AgentCore Gateway namespaces tools as "{target}___{toolName}", so the
+        connector's WebSearch tool is exposed as e.g. "web-search-tool___WebSearch".
+        Match strategy, in order:
+          1. exact match on the base name ("WebSearch")
+          2. any name ending with "___WebSearch" (target-prefixed)
+          3. if the Gateway exposes exactly one tool, use it
+        """
+        names: list[str] = [
+            str(t["name"])
+            for t in tools
+            if isinstance(t, dict) and isinstance(t.get("name"), str) and t.get("name")
+        ]
+
+        for name in names:
+            if name == cls.TOOL_NAME:
+                return name
+
+        suffix = f"___{cls.TOOL_NAME}"
+        for name in names:
+            if name.endswith(suffix):
+                return name
+
+        if len(names) == 1:
+            return names[0]
+
+        return None
+
+    async def _discover_tool_name(self) -> str:
+        """Resolve the Gateway's WebSearch tool name via tools/list (cached)."""
+        if self._tool_name is not None:
+            return self._tool_name
+
+        async with self._tool_name_lock:
+            # Re-check after acquiring the lock in case a concurrent call resolved it.
+            if self._tool_name is not None:
+                return self._tool_name
+
+            payload = await self._invoke_rpc("tools/list", {})
+            if "error" in payload:
+                message = payload.get("error", {}).get("message", "unknown MCP error")
+                raise ValueError(f"AgentCore Gateway tools/list failed: {message}")
+
+            result = payload.get("result", payload)
+            tools = result.get("tools", [])
+            name = self._select_tool_name(tools)
+            if not name:
+                available = [t.get("name") for t in tools if isinstance(t, dict)]
+                raise ValueError(
+                    "AgentCore Gateway does not expose a WebSearch tool. "
+                    f"Available tools: {available}"
+                )
+
+            logger.info("[WebSearch/AgentCore] Discovered tool name: %s", name)
+            self._tool_name = name
+            return name
+
     @staticmethod
     def _extract_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
         """Extract WebSearch results from a JSON-RPC MCP response."""
@@ -320,33 +409,21 @@ class AgentCoreSearchProvider(SearchProvider):
                 len(query),
             )
 
-        request = {
-            "jsonrpc": "2.0",
-            "id": str(uuid.uuid4()),
-            "method": "tools/call",
-            "params": {
-                "name": self.TOOL_NAME,
+        tool_name = await self._discover_tool_name()
+
+        logger.info(
+            f"[WebSearch/AgentCore] Searching: {query!r} (max_results={max_results})"
+        )
+        data = await self._invoke_rpc(
+            "tools/call",
+            {
+                "name": tool_name,
                 "arguments": {
                     "query": search_query,
                     "maxResults": max(1, min(max_results, 25)),
                 },
             },
-        }
-        payload = json.dumps(request).encode("utf-8")
-        headers = self._signed_headers(payload)
-
-        logger.info(
-            f"[WebSearch/AgentCore] Searching: {query!r} (max_results={max_results})"
         )
-        response = await self.client.post(
-            self.gateway_url,
-            content=payload,
-            headers=headers,
-        )
-        if response.status_code >= 400:
-            response.raise_for_status()
-
-        data = self._json_from_response_text(response.text)
         raw_results = self._extract_results(data)
         results = [
             SearchResult(
