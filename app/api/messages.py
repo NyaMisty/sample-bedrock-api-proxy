@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError as PydanticValidationError
 
 from app.core.config import settings
 from app.core.exceptions import BedrockAPIError, NoProviderAvailableError
@@ -760,11 +761,20 @@ async def create_message(
                 _end_trace_spans()
                 return JSONResponse(content=response.model_dump())
 
+            except PydanticValidationError as e:
+                # Assembling our own MessageResponse failed — this is a server-side
+                # bug (e.g. a provider returning a malformed result), NOT a client
+                # config error. Surface it as a 500 instead of masking it as a 400.
+                logger.error(f"Request {request_id}: Web search response assembly failed: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={"type": "api_error", "message": "Failed to assemble web search response"},
+                )
             except ValueError as e:
                 logger.error(f"Request {request_id}: Web search config error: {e}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={"type": "invalid_request_error", "message": "Invalid web search configuration"},
+                    detail={"type": "invalid_request_error", "message": f"Invalid web search configuration: {e}"},
                 )
             except Exception as e:
                 logger.error(f"Request {request_id}: Web search error: {e}")

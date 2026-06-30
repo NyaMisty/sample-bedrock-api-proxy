@@ -415,8 +415,11 @@ class AgentCoreSearchProvider(SearchProvider):
         raw_results = self._extract_results(data)
         results = [
             SearchResult(
-                url=item.get("url", ""),
-                title=item.get("title", ""),
+                # AgentCore may return null url/title (e.g. sourceless climate
+                # tables); coerce to "" so downstream WebSearchResult pydantic
+                # validation (required str fields) does not fail.
+                url=item.get("url") or "",
+                title=item.get("title") or "",
                 content=item.get("text")
                 or item.get("content")
                 or item.get("snippet")
@@ -424,6 +427,7 @@ class AgentCoreSearchProvider(SearchProvider):
                 page_age=item.get("publishedDate") or item.get("page_age"),
             )
             for item in raw_results
+            if item.get("url")  # drop results with no usable source URL
         ]
 
         logger.info(f"[WebSearch/AgentCore] Got {len(results)} results")
