@@ -245,6 +245,75 @@ async def test_agentcore_search_parses_sse_jsonrpc_response(monkeypatch):
     assert results[0].content == "from sse"
 
 
+async def test_agentcore_search_drops_results_with_null_url(monkeypatch):
+    """AgentCore occasionally returns results with null url/title; these must
+    not produce SearchResult objects with url=None/title=None, which would later
+    fail WebSearchResult pydantic validation in the non-streaming response path."""
+    from app.services.web_search.providers import AgentCoreSearchProvider
+
+    class FakeClient:
+        async def post(self, url, *, content, headers):
+            del url, headers
+            method = json.loads(content.decode("utf-8"))["method"]
+            if method == "tools/list":
+                return httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "1",
+                        "result": {"tools": [{"name": "WebSearch"}]},
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "req-1",
+                    "result": {
+                        "isError": False,
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(
+                                    {
+                                        "results": [
+                                            {
+                                                "title": "Good",
+                                                "url": "https://example.com",
+                                                "text": "ok",
+                                            },
+                                            # Sourceless result: null url/title
+                                            {
+                                                "title": None,
+                                                "url": None,
+                                                "text": "climate table",
+                                            },
+                                        ]
+                                    }
+                                ),
+                            }
+                        ],
+                    },
+                },
+            )
+
+    provider = AgentCoreSearchProvider(
+        gateway_url="https://gateway.example/mcp",
+        region="us-east-1",
+    )
+    provider._client = FakeClient()
+    monkeypatch.setattr(provider, "_signed_headers", lambda payload: {})
+
+    results = await provider.search("query")
+
+    # The null-url result is dropped; the good one survives with str fields.
+    assert len(results) == 1
+    assert results[0].url == "https://example.com"
+    assert results[0].title == "Good"
+    # No result may carry a None url/title (would break pydantic downstream).
+    assert all(isinstance(r.url, str) and isinstance(r.title, str) for r in results)
+
+
 async def test_agentcore_search_clamps_query_to_agentcore_limit(monkeypatch):
     from app.services.web_search.providers import AgentCoreSearchProvider
 
