@@ -168,6 +168,7 @@ class Settings(BaseSettings):
         default={
             # Anthropic model IDs -> Bedrock model ARNs
             "claude-fable-5": "global.anthropic.claude-fable-5",
+            "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
             "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
             "claude-opus-4-7": "global.anthropic.claude-opus-4-7",
             "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
@@ -182,6 +183,7 @@ class Settings(BaseSettings):
             "claude-fable-5-us": "us.anthropic.claude-fable-5",
             "claude-fable-5-us[1m]": "us.anthropic.claude-fable-5",
             "claude-fable-5[1m]": "global.anthropic.claude-fable-5",
+            "claude-sonnet-5[1m]": "global.anthropic.claude-sonnet-5",
             "claude-opus-4-8[1m]": "global.anthropic.claude-opus-4-8",
             "claude-opus-4-7[1m]": "global.anthropic.claude-opus-4-7",
             "claude-opus-4-6[1m]": "global.anthropic.claude-opus-4-6-v1",
