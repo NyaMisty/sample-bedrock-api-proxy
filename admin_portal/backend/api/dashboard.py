@@ -1,18 +1,51 @@
 """Dashboard API routes."""
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Union
+from datetime import datetime, timedelta, timezone
+from typing import Any, Union
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.db.dynamodb import DynamoDBClient, APIKeyManager, ModelPricingManager, UsageTracker, ModelMappingManager, UsageStatsManager
 from app.core.config import settings
-from admin_portal.backend.schemas.dashboard import DashboardStats
+from admin_portal.backend.schemas.dashboard import (
+    DashboardStats,
+    DailyUsageResponse,
+    DailyUsage,
+    DailyModelUsage,
+)
 
 router = APIRouter()
+
+
+def _list_all_pricing_items(
+    pricing_manager: ModelPricingManager, limit: int = 1000
+) -> list[dict[str, Any]]:
+    """Return all pricing rows, following DynamoDB pagination."""
+    items: list[dict[str, Any]] = []
+    last_key: dict[str, Any] | None = None
+    while True:
+        result = pricing_manager.list_all_pricing(limit=limit, last_key=last_key)
+        items.extend(result.get("items", []))
+        last_key = result.get("last_key")
+        if not last_key:
+            return items
+
+
+def _list_all_api_key_items(
+    api_key_manager: APIKeyManager, limit: int = 1000
+) -> list[dict[str, Any]]:
+    """Return all API key rows, following DynamoDB pagination."""
+    items: list[dict[str, Any]] = []
+    last_key: dict[str, Any] | None = None
+    while True:
+        result = api_key_manager.list_all_api_keys(limit=limit, last_key=last_key)
+        items.extend(result.get("items", []))
+        last_key = result.get("last_key")
+        if not last_key:
+            return items
 
 
 def _parse_timestamp(value: Union[int, str, None]) -> int:
@@ -186,4 +219,101 @@ async def get_dashboard_stats():
         total_cached_tokens=total_cached_tokens,
         total_cache_write_tokens=total_cache_write_tokens,
         total_requests=total_requests,
+    )
+
+
+@router.get("/daily-usage", response_model=DailyUsageResponse)
+async def get_daily_usage(days: int = Query(default=30, ge=1, le=90)):
+    """
+    Get per-day token usage and cost, broken down by model, for the last N days.
+
+    Aggregates raw usage records on the fly (no separate daily table). Days are
+    bucketed in UTC. The window is limited by how long raw records are retained
+    (USAGE_TTL_DAYS) — records older than that have already expired.
+    """
+    db_client = DynamoDBClient()
+    api_key_manager = APIKeyManager(db_client)
+    pricing_manager = ModelPricingManager(db_client)
+    usage_stats_manager = UsageStatsManager(db_client)
+
+    # Window: [start_of_day(now - (days-1)), now], inclusive of today (UTC).
+    now = datetime.now(timezone.utc)
+    start_dt = (now - timedelta(days=days - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    since_timestamp = int(start_dt.timestamp() * 1000)  # ms, matches table schema
+
+    # Build pricing cache (keyed by Bedrock model ID)
+    pricing_cache: dict[str, dict] = {}
+    for item in _list_all_pricing_items(pricing_manager):
+        model_id = item.get("model_id", "")
+        if model_id:
+            pricing_cache[model_id] = item
+
+    # Build model mapping cache (Anthropic -> Bedrock) from custom mappings
+    model_mapping_cache: dict[str, str] = {}
+    try:
+        model_mapping_manager = ModelMappingManager(db_client)
+        for mapping in model_mapping_manager.list_mappings():
+            anthropic_id = mapping.get("anthropic_model_id", "")
+            bedrock_id = mapping.get("bedrock_model_id", "")
+            if anthropic_id and bedrock_id:
+                model_mapping_cache[anthropic_id] = bedrock_id
+    except Exception as e:
+        print(f"[Dashboard] Error loading model mappings: {e}")
+
+    # Collect all API keys to scan
+    all_keys = _list_all_api_key_items(api_key_manager)
+    api_keys = [k.get("api_key") for k in all_keys if k.get("api_key")]
+    service_tier_cache = {
+        k["api_key"]: k.get("service_tier", "default")
+        for k in all_keys
+        if k.get("api_key")
+    }
+
+    buckets = usage_stats_manager.aggregate_daily_usage(
+        api_keys,
+        since_timestamp=since_timestamp,
+        pricing_cache=pricing_cache,
+        model_mapping_cache=model_mapping_cache,
+        service_tier_cache=service_tier_cache,
+    )
+
+    # Zero-fill every day in the window so the chart has a continuous axis.
+    daily: list[DailyUsage] = []
+    for offset in range(days):
+        day_dt = start_dt + timedelta(days=offset)
+        date_str = day_dt.strftime("%Y-%m-%d")
+        day_models = buckets.get(date_str, {})
+
+        models = [
+            DailyModelUsage(
+                model=model,
+                input_tokens=int(stats["input_tokens"]),
+                output_tokens=int(stats["output_tokens"]),
+                tokens=int(stats["tokens"]),
+                cost=round(float(stats["cost"]), 6),
+                requests=int(stats["requests"]),
+            )
+            # Largest spend first so stacked bars/legend read top-down by cost.
+            for model, stats in sorted(
+                day_models.items(), key=lambda kv: kv[1]["cost"], reverse=True
+            )
+        ]
+        total_tokens = sum(m.tokens for m in models)
+        total_cost = round(sum(m.cost for m in models), 6)
+        daily.append(
+            DailyUsage(
+                date=date_str,
+                total_tokens=total_tokens,
+                total_cost=total_cost,
+                models=models,
+            )
+        )
+
+    return DailyUsageResponse(
+        days=days,
+        start_date=start_dt.strftime("%Y-%m-%d"),
+        end_date=now.strftime("%Y-%m-%d"),
+        daily=daily,
     )
