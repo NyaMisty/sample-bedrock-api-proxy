@@ -124,11 +124,10 @@ services:
       - DOCKER_TLS_CERTDIR=
     entrypoint: ["dockerd-entrypoint.sh"]
     command: ["--host=tcp://0.0.0.0:2375"]
-    # dind stores image layer cache + container roots on a sqlite-backed
-    # metadata store; must live on a real filesystem, NOT the shfs fuse overlay
-    # at /mnt/user (sqlite locks are unreliable there → daemon stalls).
+    # dind image layer cache + container roots. Persisted under the deploy
+    # dir's data/ so all proxy state lives in one place on the host.
     volumes:
-      - /mnt/cache/sample-bedrock-api-proxy/dind:/var/lib/docker
+      - ./data/dind:/var/lib/docker
     networks:
       - proxy-network
     restart: unless-stopped
@@ -141,6 +140,7 @@ services:
 
   # ---------------------------------------------------------------------------
   # DynamoDB Local — API keys, usage, model mapping, pricing, beta headers.
+  # Persisted to ./data/dynamodb so state survives restarts.
   # ---------------------------------------------------------------------------
   dynamodb-local:
     # Pin to 2.5.x: DynamoDB Local 3.x hangs on boto3 requests (botocore sends
@@ -149,15 +149,16 @@ services:
     container_name: dynamodb-local
     ports:
       - "${DDB_PORT:-8001}:8000"
-    # DynamoDB Local uses sqlite for storage. sqlite4java cannot reliably open
-    # databases on zfs (/mnt/cache) or shfs fuse (/mnt/user) on this Unraid
-    # host — it crashes with "unable to open database file" → boto3 hangs.
-    # Use -inMemory until a stable ext4 volume is available; tables are
-    # recreated on each start by scripts/setup_tables.py, so persistence is
-    # not lost in practice (DDL is fast). Production should use real AWS DDB.
-    command: "-jar DynamoDBLocal.jar -inMemory"
+    # -dbPath must point at a DIRECTORY (not a filename) that the
+    # dynamodblocal user (uid 1000) can write to. If the path has a filename
+    # suffix (e.g. ./data/shared.db) sqlite4java aborts at startup with
+    # "Invalid directory for database creation." and the container exits.
+    # -sharedDb makes all credentials share one .db file (matches the
+    # single-tenant proxy use case).
+    command: "-jar DynamoDBLocal.jar -sharedDb -dbPath /home/dynamodblocal/data"
+    user: "1000:1000"
     volumes:
-      - /mnt/cache/sample-bedrock-api-proxy/dynamodb:/home/dynamodblocal/data
+      - ./data/dynamodb:/home/dynamodblocal/data
     networks:
       - proxy-network
     restart: unless-stopped
