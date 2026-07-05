@@ -4,6 +4,11 @@
 # Stage 1: Builder
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
+# Force IPv4 resolution preference. Some build hosts have IPv6 DNS (AAAA
+# records) but no IPv6 egress from the container, causing downloads to hang.
+# Commenting out ::ffff:0:0/96 precedence makes getaddrinfo prefer A records.
+RUN sed -i 's/^#precedence ::ffff:0:0\/96  100/precedence ::ffff:0:0\/96  100/' /etc/gai.conf
+
 # Set working directory
 WORKDIR /build
 
@@ -14,6 +19,11 @@ COPY main.py ./
 
 # Install dependencies using uv
 # uv sync will create a .venv directory with all dependencies
+# Increase timeouts and prefer IPv4: some build environments (e.g. host with
+# IPv6 but container without IPv6 egress) cause downloads to hang on AAAA
+# records. UV_DEFAULT_INDEX unset = use PyPI directly.
+ENV UV_HTTP_TIMEOUT=120 \
+    UV_CONNECT_TIMEOUT=30
 RUN uv sync --frozen --no-dev
 
 # Stage 2: Runtime

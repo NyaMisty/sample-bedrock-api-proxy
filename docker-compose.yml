@@ -1,101 +1,233 @@
-version: '3.8'
+# Docker Compose for Anthropic-Bedrock API Proxy — full Claude feature set.
+#
+# Features enabled: PTC (programmatic tool calling), standalone code execution,
+# web_search, web_fetch, extended thinking, document support, prompt caching,
+# OpenTelemetry tracing, admin portal.
+#
+# Backend selection via BACKEND_MODE (bedrock | openai | anthropic). Two
+# profiles are provided so the same file covers both deployment shapes:
+#
+#   docker compose --profile bedrock    up -d   # AWS Bedrock backend
+#   docker compose --profile anthropic  up -d   # direct Anthropic API backend
+#   docker compose --profile openai     up -d   # OpenAI-compatible backend
+#
+# All credentials are injected via the host environment or a .env file next
+# to this compose file. No secrets are hardcoded here.
+#
+# PTC and standalone code execution require Docker-in-Docker (dind): the
+# api-proxy container talks to a sibling dind daemon over the docker network
+# (DOCKER_HOST=tcp://docker:2375). The dind sidecar runs privileged. This is
+# the only way to give the proxy a Docker daemon without bind-mounting the
+# host's /var/run/docker.sock (which would grant root on the host).
+#
+# Usage:
+#   1. cp .env.example .env  &&  fill in credentials
+#   2. docker compose --profile anthropic up -d
+#   3. docker compose exec api-proxy uv run scripts/setup_tables.py
+#   4. docker compose exec api-proxy uv run scripts/create_api_key.py --user-id dev --name "dev key"
 
 services:
-  # API Proxy Service
+  # ---------------------------------------------------------------------------
+  # API Proxy — the main service
+  # ---------------------------------------------------------------------------
   api-proxy:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: anthropic-bedrock-proxy
+    # Image built and pushed by .github/workflows/docker-build.yml.
+    # Pull from GHCR on deployment hosts to avoid per-host build network issues.
+    # For local development, create a docker-compose.override.yml with:
+    #   services:
+    #     api-proxy:
+    #       build:
+    #         context: .
+    #         dockerfile: Dockerfile
+    image: ghcr.io/nyamisty/sample-bedrock-api-proxy:${IMAGE_TAG:-latest}
+    container_name: anthropic-proxy
+    pull_policy: always
     ports:
-      - "8000:8000"
+      - "${PROXY_PORT:-8000}:8000"
     environment:
-      # Application
+      # --- App / server ---
       - APP_NAME=Anthropic-Bedrock API Proxy
-      - ENVIRONMENT=development
-      - LOG_LEVEL=INFO
-
-      # Server
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - HOST=0.0.0.0
       - PORT=8000
-      - WORKERS=4
+      - WORKERS=${WORKERS:-4}
 
-      # AWS (use host credentials or set explicitly)
+      # --- Backend mode (bedrock | openai | anthropic) ---
+      - BACKEND_MODE=${BACKEND_MODE:-bedrock}
+
+      # --- Anthropic direct backend (only used when BACKEND_MODE=anthropic) ---
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+      # --- OpenAI-compatible backend (only used when BACKEND_MODE=openai) ---
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ENABLE_OPENAI_COMPAT=${ENABLE_OPENAI_COMPAT:-false}
+      - ENABLE_OPENAI_PASSTHROUGH=${ENABLE_OPENAI_PASSTHROUGH:-false}
+
+      # --- AWS credentials ---
+      # Always needed for DynamoDB (usage tracking, API keys, model mapping).
+      # For BACKEND_MODE=bedrock these also drive the boto3 bedrock-runtime
+      # client; for openai/anthropic modes the bedrock client is constructed
+      # but never called.
       - AWS_REGION=${AWS_REGION:-us-east-1}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
 
-      # DynamoDB (use local if running localstack)
+      # --- DynamoDB (local sidecar) ---
       - DYNAMODB_ENDPOINT_URL=http://dynamodb-local:8000
+      - DYNAMODB_TIMEOUT=${DYNAMODB_TIMEOUT:-10}
 
-      # Authentication
-      - REQUIRE_API_KEY=True
-      - MASTER_API_KEY=${MASTER_API_KEY:-sk-dev-master-key}
+      # --- Authentication ---
+      - REQUIRE_API_KEY=${REQUIRE_API_KEY:-true}
+      - MASTER_API_KEY=${MASTER_API_KEY:?MASTER_API_KEY is required}
 
-      # Rate Limiting
-      - RATE_LIMIT_ENABLED=True
-      - RATE_LIMIT_REQUESTS=100
-      - RATE_LIMIT_WINDOW=60
+      # --- Rate limiting ---
+      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-true}
+      - RATE_LIMIT_REQUESTS=${RATE_LIMIT_REQUESTS:-100}
+      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
 
-      # Features
-      - ENABLE_TOOL_USE=True
-      - ENABLE_EXTENDED_THINKING=True
-      - ENABLE_DOCUMENT_SUPPORT=True
+      # --- Docker-in-Docker for PTC / standalone code execution ---
+      # docker.from_env() inside the container picks up DOCKER_HOST and talks
+      # to the sibling dind daemon. TLS is disabled because traffic stays on
+      # the private compose network.
+      - DOCKER_HOST=tcp://docker:2375
+      - DOCKER_TLS_VERIFY=
+      - PTC_SANDBOX_IMAGE=${PTC_SANDBOX_IMAGE:-python:3.11-slim}
+      - PTC_NETWORK_DISABLED=${PTC_NETWORK_DISABLED:-true}
+      - PTC_MEMORY_LIMIT=${PTC_MEMORY_LIMIT:-256m}
+      - PTC_PIDS_LIMIT=${PTC_PIDS_LIMIT:-64}
+      - PTC_EXECUTION_TIMEOUT=${PTC_EXECUTION_TIMEOUT:-60}
+      - PTC_SESSION_TIMEOUT=${PTC_SESSION_TIMEOUT:-270}
+
+      # --- Feature flags (all on for full Claude feature set) ---
+      - ENABLE_TOOL_USE=true
+      - ENABLE_EXTENDED_THINKING=true
+      - ENABLE_DOCUMENT_SUPPORT=true
+      - ENABLE_PROGRAMMATIC_TOOL_CALLING=true
+      - ENABLE_STANDALONE_CODE_EXECUTION=true
+      - ENABLE_WEB_SEARCH=true
+      - ENABLE_WEB_FETCH=true
+      - PROMPT_CACHING_ENABLED=true
+
+      # --- Web search (Tavily) ---
+      - WEB_SEARCH_PROVIDER=tavily
+      - WEB_SEARCH_API_KEY=${WEB_SEARCH_API_KEY:?WEB_SEARCH_API_KEY is required}
+      - WEB_SEARCH_MAX_RESULTS=${WEB_SEARCH_MAX_RESULTS:-5}
+      - WEB_SEARCH_DEFAULT_MAX_USES=${WEB_SEARCH_DEFAULT_MAX_USES:-10}
+
+      # --- Web fetch (no API key needed) ---
+      - WEB_FETCH_MAX_ITERATIONS=${WEB_FETCH_MAX_ITERATIONS:-10}
+
+      # --- Tracing (optional) ---
+      - ENABLE_TRACING=${ENABLE_TRACING:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-anthropic-bedrock-proxy}
+
+      # --- Cache TTL ---
+      - DEFAULT_CACHE_TTL=${DEFAULT_CACHE_TTL:-}
 
     depends_on:
-      - dynamodb-local
-
+      dynamodb-local:
+        condition: service_healthy
+      docker:
+        condition: service_healthy
     networks:
       - proxy-network
-
     restart: unless-stopped
-
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Docker-in-Docker daemon — provides the sandbox runtime for PTC and
+  # standalone code execution. Runs privileged so it can spawn containers.
+  # ---------------------------------------------------------------------------
+  docker:
+    image: docker:dind
+    container_name: proxy-dind
+    privileged: true
+    environment:
+      # Explicitly disable TLS. docker:dind 19.03+ enables TLS by default
+      # (listening on 2376). Setting DOCKER_TLS_CERTDIR to empty is ambiguous
+      # across versions, so we also override the entrypoint below to force
+      # the daemon onto 2375 plain TCP. Traffic stays on the private compose
+      # network, so TLS is unnecessary.
+      - DOCKER_TLS_CERTDIR=
+    entrypoint: ["dockerd-entrypoint"]
+    command: ["--host=tcp://0.0.0.0:2375"]
+    # Persist the daemon's image layer cache so PTC sandbox images (e.g.
+    # python:3.11-slim) are pulled once and reused across restarts.
+    volumes:
+      - dind-data:/var/lib/docker
+    networks:
+      - proxy-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
       start_period: 40s
 
-  # Local DynamoDB for development
+  # ---------------------------------------------------------------------------
+  # DynamoDB Local — API keys, usage, model mapping, pricing, beta headers.
+  # ---------------------------------------------------------------------------
   dynamodb-local:
     image: amazon/dynamodb-local:latest
     container_name: dynamodb-local
     ports:
-      - "8001:8000"
+      - "${DDB_PORT:-8001}:8000"
     command: "-jar DynamoDBLocal.jar -sharedDb -dbPath ./data"
     volumes:
       - dynamodb-data:/home/dynamodblocal/data
     networks:
       - proxy-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
-  # DynamoDB Admin UI (optional)
+  # ---------------------------------------------------------------------------
+  # DynamoDB Admin UI (optional, dev convenience)
+  # ---------------------------------------------------------------------------
   dynamodb-admin:
     image: aaronshaf/dynamodb-admin:latest
     container_name: dynamodb-admin
+    profiles: ["dev"]
     ports:
-      - "8002:8001"
+      - "${DDB_ADMIN_PORT:-8002}:8001"
     environment:
       - DYNAMO_ENDPOINT=http://dynamodb-local:8000
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - AWS_ACCESS_KEY_ID=local
       - AWS_SECRET_ACCESS_KEY=local
     depends_on:
-      - dynamodb-local
+      dynamodb-local:
+        condition: service_healthy
     networks:
       - proxy-network
     restart: unless-stopped
 
-  # Prometheus for metrics (optional)
+  # ---------------------------------------------------------------------------
+  # Prometheus + Grafana (optional, observability)
+  # ---------------------------------------------------------------------------
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
+    profiles: ["observability"]
     ports:
-      - "9090:9090"
+      - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
-      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -104,14 +236,14 @@ services:
       - proxy-network
     restart: unless-stopped
 
-  # Grafana for visualization (optional)
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
+    profiles: ["observability"]
     ports:
-      - "3000:3000"
+      - "${GRAFANA_PORT:-3000}:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana-data:/var/lib/grafana
@@ -127,5 +259,6 @@ networks:
 
 volumes:
   dynamodb-data:
+  dind-data:
   prometheus-data:
   grafana-data:
