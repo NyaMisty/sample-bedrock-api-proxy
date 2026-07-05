@@ -159,7 +159,7 @@ services:
       # the daemon onto 2375 plain TCP. Traffic stays on the private compose
       # network, so TLS is unnecessary.
       - DOCKER_TLS_CERTDIR=
-    entrypoint: ["dockerd-entrypoint"]
+    entrypoint: ["dockerd-entrypoint.sh"]
     command: ["--host=tcp://0.0.0.0:2375"]
     # Persist the daemon's image layer cache so PTC sandbox images (e.g.
     # python:3.11-slim) are pulled once and reused across restarts.
@@ -190,11 +190,12 @@ services:
       - proxy-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/"]
+      # amazon/dynamodb-local has no curl/wget; use bash /dev/tcp probe.
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/localhost/8000'"]
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 10s
+      start_period: 15s
 
   # ---------------------------------------------------------------------------
   # DynamoDB Admin UI (optional, dev convenience)
