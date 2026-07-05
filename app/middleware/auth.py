@@ -59,6 +59,39 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.api_key_info = None
             return await call_next(request)
 
+        # Transparent proxy mode: skip DDB/master-key validation entirely.
+        # The client's key is extracted and stashed on request.state so the
+        # backend service can relay it verbatim to the upstream endpoint.
+        if settings.transparent_proxy:
+            api_key = request.headers.get(settings.api_key_header)
+            if not api_key:
+                authz = request.headers.get("Authorization")
+                if authz and authz.startswith("Bearer "):
+                    api_key = authz[len("Bearer "):].strip()
+            if not api_key:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={
+                        "type": "error",
+                        "error": {
+                            "type": "authentication_error",
+                            "message": f"Missing API key in {settings.api_key_header} or Authorization: Bearer header",
+                        },
+                    },
+                )
+            request.state.api_key_info = {
+                "api_key": api_key,
+                "user_id": "transparent",
+                "is_master": False,
+                # No rate limit in transparent mode — rate limiting depends on
+                # a DDB-registered key identity, which transparent mode
+                # explicitly bypasses.
+                "rate_limit": None,
+                "cache_ttl": None,
+            }
+            return await call_next(request)
+
         # Extract API key from header (x-api-key first, fall back to Authorization: Bearer)
         api_key = request.headers.get(settings.api_key_header)
         if not api_key:

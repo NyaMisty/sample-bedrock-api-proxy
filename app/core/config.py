@@ -524,6 +524,17 @@ class Settings(BaseSettings):
         alias="ANTHROPIC_BASE_URL",
         description="Anthropic API base URL for BACKEND_MODE=anthropic.",
     )
+    transparent_proxy: bool = Field(
+        default=False,
+        alias="TRANSPARENT_PROXY",
+        description=(
+            "Transparent proxy mode: skip the proxy's own auth (DDB key "
+            "validation + master key) and forward the client's x-api-key "
+            "verbatim to the upstream backend. Only meaningful with "
+            "BACKEND_MODE=anthropic or openai (Bedrock uses AWS sigv4, "
+            "which cannot be transparently relayed)."
+        ),
+    )
 
     # === Multi-Provider Gateway Feature Flags ===
     multi_provider_enabled: bool = Field(
@@ -647,6 +658,12 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_backend_mode(self):
         """Validate backend mode has the required credentials."""
+        if self.transparent_proxy and self.backend_mode == "bedrock":
+            raise ValueError(
+                "TRANSPARENT_PROXY=true requires BACKEND_MODE=anthropic or "
+                "openai (Bedrock uses AWS sigv4 signatures, not a relayable "
+                "static key)."
+            )
         if self.backend_mode == "openai":
             if not (self.openai_api_key and self.openai_base_url):
                 raise ValueError(
@@ -654,7 +671,9 @@ class Settings(BaseSettings):
                     "and OPENAI_BASE_URL (or MANTLE_ENDPOINT_URL)."
                 )
         elif self.backend_mode == "anthropic":
-            if not self.anthropic_api_key:
+            # In transparent-proxy mode the per-request client key is relayed
+            # upstream, so a configured ANTHROPIC_API_KEY is not required.
+            if not self.transparent_proxy and not self.anthropic_api_key:
                 raise ValueError("BACKEND_MODE=anthropic requires ANTHROPIC_API_KEY.")
         return self
 

@@ -214,6 +214,18 @@ def get_usage_tracker(request: Request) -> UsageTracker:
     return UsageTracker(dynamodb_client)
 
 
+def _resolve_upstream_api_key(api_key_info: Optional[dict]) -> Optional[str]:
+    """Return the client API key to relay upstream when transparent-proxy mode is on.
+
+    In transparent-proxy mode the proxy forwards the caller's key verbatim to
+    the upstream backend instead of using the configured ANTHROPIC_API_KEY.
+    Returns ``None`` otherwise (the backend falls back to its configured key).
+    """
+    if not settings.transparent_proxy or not api_key_info:
+        return None
+    return api_key_info.get("api_key")
+
+
 # Dependency to get PTC service
 def get_ptc_service_dep() -> PTCService:
     """Get PTC service instance."""
@@ -1011,7 +1023,13 @@ async def create_message(
         else:
             # Handle non-streaming request (async to not block event loop)
             response = await bedrock_service.invoke_model(
-                request_data, request_id, service_tier, anthropic_beta, cache_ttl=cache_ttl, provider_id=provider_id
+                request_data,
+                request_id,
+                service_tier,
+                anthropic_beta,
+                cache_ttl=cache_ttl,
+                provider_id=provider_id,
+                upstream_api_key=_resolve_upstream_api_key(api_key_info),
             )
 
             if _trace_span is not None:
@@ -1317,7 +1335,13 @@ async def _handle_streaming_request(
     try:
         # Stream events from Bedrock (with beta header mapping)
         async for sse_event in bedrock_service.invoke_model_stream(
-            request_data, request_id, service_tier, anthropic_beta, cache_ttl=cache_ttl, provider_id=provider_id
+            request_data,
+            request_id,
+            service_tier,
+            anthropic_beta,
+            cache_ttl=cache_ttl,
+            provider_id=provider_id,
+            upstream_api_key=_resolve_upstream_api_key(api_key_info),
         ):
             # Parse event to track usage from message_delta and message_start events
             # SSE format: "event: <type>\ndata: <json>\n\n"
@@ -1450,7 +1474,11 @@ async def count_tokens(
     provider_id = api_key_info.get("provider_id") if api_key_info else None
     try:
         # Count tokens using the Bedrock service (async to not block event loop)
-        token_count = await bedrock_service.count_tokens(request_data, provider_id=provider_id)
+        token_count = await bedrock_service.count_tokens(
+            request_data,
+            provider_id=provider_id,
+            upstream_api_key=_resolve_upstream_api_key(api_key_info),
+        )
 
         return CountTokensResponse(input_tokens=token_count)
 

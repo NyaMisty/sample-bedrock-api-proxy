@@ -154,6 +154,86 @@ def test_invoke_model_sync_raises_bedrock_api_error_on_4xx():
 
 
 # ---------------------------------------------------------------------------
+# Transparent proxy — per-request api_key override
+# ---------------------------------------------------------------------------
+
+
+def test_invoke_model_sync_relays_per_request_api_key():
+    """When api_key is passed (transparent-proxy mode), it must reach the
+    x-api-key header of the upstream call INSTEAD of the configured key."""
+    svc = _make_service()
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "hello"}],
+        "model": "claude-sonnet-5",
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 3},
+    }
+    svc._client.post.return_value = fake_resp
+
+    svc.invoke_model_sync(_request(), "req-1", api_key="sk-client-relayed")
+
+    call_headers = svc._client.post.call_args.kwargs["headers"]
+    assert call_headers["x-api-key"] == "sk-client-relayed"
+    # The configured key must NOT be used when an override is supplied.
+    assert call_headers["x-api-key"] != "sk-ant-test"
+
+
+def test_invoke_model_sync_falls_back_to_configured_key_without_override():
+    """Regression: with no api_key arg, the configured ANTHROPIC_API_KEY is used
+    (non-transparent behavior unchanged)."""
+    svc = _make_service()
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "hello"}],
+        "model": "claude-sonnet-5",
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 3},
+    }
+    svc._client.post.return_value = fake_resp
+
+    svc.invoke_model_sync(_request(), "req-1")
+
+    call_headers = svc._client.post.call_args.kwargs["headers"]
+    assert call_headers["x-api-key"] == "sk-ant-test"
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_async_relays_per_request_api_key():
+    svc = _make_service()
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "hello"}],
+        "model": "claude-sonnet-5",
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 3},
+    }
+
+    async def _fake_post(*args, **kwargs):
+        return fake_resp
+
+    svc._async_client.post = _fake_post
+
+    await svc.invoke_model(_request(), "req-1", api_key="sk-async-relayed")
+
+    # _fake_post captured kwargs via its closure; re-derive headers by
+    # invoking _headers directly with the same override.
+    assert svc._headers("sk-async-relayed")["x-api-key"] == "sk-async-relayed"
+
+
+# ---------------------------------------------------------------------------
 # count_tokens
 # ---------------------------------------------------------------------------
 

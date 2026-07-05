@@ -15,6 +15,7 @@ def _clear_backend_env(monkeypatch):
         "OPENAI_BASE_URL",
         "BEDROCK_API_KEY",
         "MANTLE_ENDPOINT_URL",
+        "TRANSPARENT_PROXY",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -65,3 +66,45 @@ def test_openai_mode_accepts_when_credentials_present(monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "https://mantle.example/v1")
     settings = Settings(_env_file=None)
     assert settings.backend_mode == "openai"
+
+
+# ---------------------------------------------------------------------------
+# TRANSPARENT_PROXY
+# ---------------------------------------------------------------------------
+
+
+def test_transparent_proxy_defaults_off(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    settings = Settings(_env_file=None)
+    assert settings.transparent_proxy is False
+
+
+def test_transparent_proxy_rejects_bedrock_mode(monkeypatch):
+    """Bedrock uses AWS sigv4 — a client key cannot be relayed transparently."""
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("BACKEND_MODE", "bedrock")
+    monkeypatch.setenv("TRANSPARENT_PROXY", "true")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_transparent_proxy_anthropic_does_not_require_configured_key(monkeypatch):
+    """In transparent mode the client key is relayed, so ANTHROPIC_API_KEY
+    is NOT required at startup."""
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("BACKEND_MODE", "anthropic")
+    monkeypatch.setenv("TRANSPARENT_PROXY", "true")
+    # No ANTHROPIC_API_KEY set — must still validate.
+    settings = Settings(_env_file=None)
+    assert settings.transparent_proxy is True
+    assert settings.backend_mode == "anthropic"
+
+
+def test_transparent_proxy_openai_mode_ok(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("BACKEND_MODE", "openai")
+    monkeypatch.setenv("TRANSPARENT_PROXY", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://mantle.example/v1")
+    settings = Settings(_env_file=None)
+    assert settings.transparent_proxy is True

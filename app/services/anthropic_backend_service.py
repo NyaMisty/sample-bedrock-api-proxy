@@ -101,9 +101,11 @@ class AnthropicBackendService:
         self._current_beta = beta_from_body
         return body
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self, api_key: Optional[str] = None) -> Dict[str, str]:
+        # In transparent-proxy mode the per-request client key is relayed
+        # verbatim; otherwise fall back to the configured ANTHROPIC_API_KEY.
         headers = {
-            "x-api-key": self._api_key,
+            "x-api-key": api_key or self._api_key,
             "anthropic-version": _ANTHROPIC_VERSION_HEADER,
             "content-type": "application/json",
         }
@@ -116,17 +118,24 @@ class AnthropicBackendService:
     # Non-streaming
     # ------------------------------------------------------------------
     def invoke_model_sync(
-        self, request: MessageRequest, request_id: Optional[str] = None
+        self,
+        request: MessageRequest,
+        request_id: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> MessageResponse:
         """Synchronously call ``POST /v1/messages`` and return the response.
 
         The Anthropic response is already in native ``MessageResponse`` shape,
         so no converter is needed — just validate.
+
+        ``api_key`` overrides the configured key for this request only
+        (transparent-proxy mode); when ``None`` the configured
+        ``ANTHROPIC_API_KEY`` is used.
         """
         body = self._normalize_body(request)
         url = f"{self._base_url}/v1/messages"
         try:
-            resp = self._client.post(url, json=body, headers=self._headers())
+            resp = self._client.post(url, json=body, headers=self._headers(api_key))
         except httpx.HTTPError as e:
             raise BedrockAPIError(
                 error_code="AnthropicBackendRequestError",
@@ -148,7 +157,10 @@ class AnthropicBackendService:
             )
 
     async def invoke_model(
-        self, request: MessageRequest, request_id: Optional[str] = None
+        self,
+        request: MessageRequest,
+        request_id: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> MessageResponse:
         """Asynchronously call ``POST /v1/messages``.
 
@@ -159,7 +171,7 @@ class AnthropicBackendService:
         url = f"{self._base_url}/v1/messages"
         try:
             resp = await self._async_client.post(
-                url, json=body, headers=self._headers()
+                url, json=body, headers=self._headers(api_key)
             )
         except httpx.HTTPError as e:
             raise BedrockAPIError(
@@ -185,7 +197,10 @@ class AnthropicBackendService:
     # Streaming — pure SSE relay
     # ------------------------------------------------------------------
     async def invoke_model_stream(
-        self, request: MessageRequest, message_id: Optional[str] = None
+        self,
+        request: MessageRequest,
+        message_id: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Stream ``POST /v1/messages`` SSE events.
 
@@ -199,7 +214,7 @@ class AnthropicBackendService:
         url = f"{self._base_url}/v1/messages"
         try:
             async with self._async_client.stream(
-                "POST", url, json=body, headers=self._headers()
+                "POST", url, json=body, headers=self._headers(api_key)
             ) as resp:
                 if resp.status_code >= 400:
                     text = await resp.aread()
@@ -221,7 +236,9 @@ class AnthropicBackendService:
     # ------------------------------------------------------------------
     # Token counting
     # ------------------------------------------------------------------
-    async def count_tokens(self, request: MessageRequest) -> int:
+    async def count_tokens(
+        self, request: MessageRequest, api_key: Optional[str] = None
+    ) -> int:
         """Call Anthropic's ``/v1/messages/count_tokens`` endpoint.
 
         Accepts either a ``MessageRequest`` or a ``CountTokensRequest``
@@ -237,7 +254,7 @@ class AnthropicBackendService:
         url = f"{self._base_url}/v1/messages/count_tokens"
         try:
             resp = await self._async_client.post(
-                url, json=body, headers=self._headers()
+                url, json=body, headers=self._headers(api_key)
             )
             if resp.status_code == 200:
                 data = resp.json()

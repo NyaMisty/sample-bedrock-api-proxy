@@ -804,6 +804,7 @@ class BedrockService:
         anthropic_beta: Optional[str] = None,
         cache_ttl: Optional[str] = None,
         provider_id: Optional[str] = None,
+        upstream_api_key: Optional[str] = None,
     ) -> MessageResponse:
         """
         Invoke Bedrock model (non-streaming) asynchronously.
@@ -829,7 +830,7 @@ class BedrockService:
         # semaphore/executor below.
         if self._anthropic_backend_service is not None:  # mode == "anthropic"
             return await self._anthropic_backend_service.invoke_model(
-                request, request_id
+                request, request_id, api_key=upstream_api_key
             )
         if self._backend_mode == "openai" and self._openai_compat_service:
             if self._openai_use_responses:
@@ -1340,6 +1341,7 @@ class BedrockService:
         anthropic_beta: Optional[str] = None,
         cache_ttl: Optional[str] = None,
         provider_id: Optional[str] = None,
+        upstream_api_key: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Invoke Bedrock model with streaming (Server-Sent Events format).
@@ -1366,7 +1368,7 @@ class BedrockService:
         if self._anthropic_backend_service is not None:  # mode == "anthropic"
             message_id = request_id or f"msg_{uuid4().hex}"
             async for event in self._anthropic_backend_service.invoke_model_stream(
-                request, message_id
+                request, message_id, api_key=upstream_api_key
             ):
                 yield event
             return
@@ -2088,7 +2090,10 @@ class BedrockService:
             raise Exception(f"Failed to get model info: {str(e)}")
 
     async def count_tokens(
-        self, request: CountTokensRequest, provider_id: Optional[str] = None
+        self,
+        request: CountTokensRequest,
+        provider_id: Optional[str] = None,
+        upstream_api_key: Optional[str] = None,
     ) -> int:
         """
         Count tokens in a request asynchronously.
@@ -2113,7 +2118,9 @@ class BedrockService:
             # existing heuristic (silent degradation).
             return self._estimate_token_count(request)
         if self._anthropic_backend_service is not None:  # mode == "anthropic"
-            return await self._anthropic_backend_service.count_tokens(request)
+            return await self._anthropic_backend_service.count_tokens(
+                request, api_key=upstream_api_key
+            )
 
         # Check if this is an Anthropic/Claude model
         model_id = request.model.lower()
