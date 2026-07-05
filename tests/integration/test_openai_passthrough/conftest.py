@@ -124,9 +124,13 @@ def client(
     import importlib
 
     # Reset httpx singleton so it picks up the patched base URL
+    from app.api.openai_passthrough.chat_responses_adapter import (
+        reset_unsupported_param_cache_for_testing,
+    )
     from app.api.openai_passthrough.client import reset_client_for_testing
 
     reset_client_for_testing()
+    reset_unsupported_param_cache_for_testing()
 
     # Access the actual router MODULE (not the APIRouter instance) via sys.modules.
     # We must do this because app/api/openai_passthrough/__init__.py shadows the

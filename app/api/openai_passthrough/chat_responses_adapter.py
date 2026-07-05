@@ -14,6 +14,15 @@ from typing import Any
 
 import httpx
 
+# Learned per-model unsupported params: model -> {param: learned_at (monotonic)}.
+# Populated when upstream 400s with unsupported_parameter/unknown_parameter so
+# subsequent requests strip the param proactively instead of paying the 400
+# round-trip every time. In-memory per worker (same precedent as the token
+# bucket rate limiter); entries expire so a model that gains support recovers.
+_unsupported_param_cache: dict[str, dict[str, float]] = {}
+
+UNSUPPORTED_PARAM_CACHE_TTL_SECONDS = 3600.0
+
 _CHAT_TO_RESPONSES_COPY_FIELDS = {
     "temperature",
     "top_p",
@@ -24,6 +33,90 @@ _CHAT_TO_RESPONSES_COPY_FIELDS = {
     "service_tier",
     "user",
 }
+
+# How many upstream 400 "unsupported_parameter" errors we absorb by dropping
+# the named param and retrying. Bounded by the number of droppable sampling
+# params a Chat Completions client realistically sends (temperature, top_p,
+# stop, ...).
+MAX_UNSUPPORTED_PARAM_RETRIES = 4
+
+# Upstream 400 codes that name a request param the model won't accept.
+# xai.grok-4.3 uses "unsupported_parameter" for temperature/top_p and
+# "unknown_parameter" for stop/seed.
+_DROPPABLE_PARAM_ERROR_CODES = {"unsupported_parameter", "unknown_parameter"}
+
+
+def pop_unsupported_parameter(
+    body: dict[str, Any],
+    status_code: int,
+    error_payload: Any,
+) -> str | None:
+    """Remove a top-level param the upstream rejected as unsupported.
+
+    Some Responses-API models reject sampling params outright (e.g.
+    xai.grok-4.3 400s on 'temperature': "Unsupported parameter: 'temperature'
+    is not supported with this model."), but Chat Completions clients send
+    them unconditionally. The 400 carries code="unsupported_parameter" (or
+    "unknown_parameter") plus the param name, so the caller can drop it and
+    retry.
+
+    Returns the dropped param name, or None if the error is not a droppable
+    unsupported-parameter error (caller should surface it verbatim).
+
+    The (model, param) pair is remembered in-memory so later requests strip
+    the param proactively via strip_learned_unsupported_params() instead of
+    paying the 400 round-trip on every request.
+    """
+    if status_code != 400 or not isinstance(error_payload, dict):
+        return None
+    error = error_payload.get("error")
+    if (
+        not isinstance(error, dict)
+        or error.get("code") not in _DROPPABLE_PARAM_ERROR_CODES
+    ):
+        return None
+    param = error.get("param")
+    if isinstance(param, str) and param in body:
+        del body[param]
+        model = body.get("model")
+        if isinstance(model, str) and model:
+            _unsupported_param_cache.setdefault(model, {})[param] = time.monotonic()
+        return param
+    return None
+
+
+def strip_learned_unsupported_params(body: dict[str, Any]) -> list[str]:
+    """Proactively remove params this model previously rejected as unsupported.
+
+    Consults the in-memory cache populated by pop_unsupported_parameter().
+    Entries older than UNSUPPORTED_PARAM_CACHE_TTL_SECONDS are evicted, so a
+    model that gains support for a param recovers within the TTL.
+
+    Returns the list of removed param names (for logging).
+    """
+    model = body.get("model")
+    if not isinstance(model, str):
+        return []
+    learned = _unsupported_param_cache.get(model)
+    if not learned:
+        return []
+    now = time.monotonic()
+    stripped: list[str] = []
+    for param, learned_at in list(learned.items()):
+        if now - learned_at > UNSUPPORTED_PARAM_CACHE_TTL_SECONDS:
+            del learned[param]
+            continue
+        if param in body:
+            del body[param]
+            stripped.append(param)
+    if not learned:
+        _unsupported_param_cache.pop(model, None)
+    return stripped
+
+
+def reset_unsupported_param_cache_for_testing() -> None:
+    """Clear the learned-params cache — only call from test fixtures."""
+    _unsupported_param_cache.clear()
 
 
 def chat_request_to_response_request(body: dict[str, Any]) -> dict[str, Any]:
@@ -251,7 +344,9 @@ def _convert_chat_message(
 
     items: list[dict[str, Any]] = []
     if content not in ("", None):
-        items.append({"role": role or "user", "content": content})
+        converted = _convert_content_parts(content, role or "user")
+        if converted not in ("", None, []):
+            items.append({"role": role or "user", "content": converted})
 
     for tool_call in message.get("tool_calls") or []:
         if not isinstance(tool_call, dict):
@@ -268,6 +363,53 @@ def _convert_chat_message(
             }
         )
     return items
+
+
+def _convert_content_parts(content: Any, role: str) -> Any:
+    """Convert Chat Completions content parts to Responses API part types.
+
+    Chat Completions uses {"type": "text"|"image_url", ...} parts, but the
+    Responses API requires role-specific part types: input_text/input_image
+    for user input, output_text for assistant output. Upstream rejects the
+    Chat Completions shapes with "Invalid 'input': value did not match any
+    expected variant".
+    """
+    if not isinstance(content, list):
+        return content
+
+    is_assistant = role == "assistant"
+    text_type = "output_text" if is_assistant else "input_text"
+    parts: list[dict[str, Any]] = []
+    for item in content:
+        if not isinstance(item, dict):
+            parts.append({"type": text_type, "text": str(item)})
+            continue
+        part_type = item.get("type")
+        if part_type in {"text", "input_text", "output_text"}:
+            part: dict[str, Any] = {
+                "type": text_type,
+                "text": str(item.get("text", "")),
+            }
+            if is_assistant:
+                part["annotations"] = item.get("annotations") or []
+            parts.append(part)
+        elif part_type == "image_url":
+            image_url = item.get("image_url")
+            if isinstance(image_url, dict):
+                url = image_url.get("url", "")
+                detail = image_url.get("detail")
+            else:
+                url = "" if image_url is None else str(image_url)
+                detail = None
+            image_part: dict[str, Any] = {"type": "input_image", "image_url": url}
+            if detail:
+                image_part["detail"] = detail
+            parts.append(image_part)
+        else:
+            # Already-native Responses parts (input_image, input_file,
+            # refusal, ...) and unknown types pass through unchanged.
+            parts.append(item)
+    return parts
 
 
 def _convert_tool(tool: Any) -> Any:

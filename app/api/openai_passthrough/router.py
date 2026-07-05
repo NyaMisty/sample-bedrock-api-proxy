@@ -14,9 +14,12 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.api.openai_passthrough.chat_responses_adapter import (
+    MAX_UNSUPPORTED_PARAM_RETRIES,
     chat_request_to_response_request,
+    pop_unsupported_parameter,
     response_to_chat_completion,
     stream_responses_as_chat_completions,
+    strip_learned_unsupported_params,
 )
 from app.api.openai_passthrough.client import get_client, upstream_headers, upstream_url
 from app.api.openai_passthrough.context_store import (
@@ -242,6 +245,14 @@ async def chat_completions(
     mapping, _, _ = _managers()
     body["model"] = resolve_model_id(body.get("model", ""), mapping)
     upstream_body = chat_request_to_response_request(body)
+    pre_stripped = strip_learned_unsupported_params(upstream_body)
+    if pre_stripped:
+        logger.info(
+            "[OPENAI-PASSTHROUGH] proactively stripped learned unsupported "
+            "parameters %s for model %s",
+            pre_stripped,
+            body["model"],
+        )
     extra = _passthrough_extra_headers(request)
     base_url, api_key = _resolve_upstream_target(api_key_info)
     _info_log_upstream_request(
@@ -253,30 +264,50 @@ async def chat_completions(
     )
 
     if body.get("stream"):
-        try:
-            upstream_resp, error_body = await open_upstream_stream(
-                "POST",
-                "/responses",
-                upstream_body,
-                extra,
-                base_url=base_url,
-                api_key=api_key,
-            )
-        except UpstreamConnectionError as exc:
-            return JSONResponse(
-                {"error": {"message": exc.message, "type": "upstream_error"}},
-                status_code=exc.status_code,
-            )
-        if error_body is not None:
+        retries_left = MAX_UNSUPPORTED_PARAM_RETRIES
+        while True:
+            try:
+                upstream_resp, error_body = await open_upstream_stream(
+                    "POST",
+                    "/responses",
+                    upstream_body,
+                    extra,
+                    base_url=base_url,
+                    api_key=api_key,
+                )
+            except UpstreamConnectionError as exc:
+                return JSONResponse(
+                    {"error": {"message": exc.message, "type": "upstream_error"}},
+                    status_code=exc.status_code,
+                )
+            if error_body is None:
+                break
             error_payload = _decode_error_body(error_body)
-            _info_log_upstream_response(
-                path="/responses",
-                status_code=upstream_resp.status_code,
-                body=error_payload,
-                stream=True,
-                headers=upstream_resp.headers,
+            dropped = (
+                pop_unsupported_parameter(
+                    upstream_body, upstream_resp.status_code, error_payload
+                )
+                if retries_left > 0
+                else None
             )
-            return JSONResponse(error_payload, status_code=upstream_resp.status_code)
+            if dropped is None:
+                _info_log_upstream_response(
+                    path="/responses",
+                    status_code=upstream_resp.status_code,
+                    body=error_payload,
+                    stream=True,
+                    headers=upstream_resp.headers,
+                )
+                return JSONResponse(
+                    error_payload, status_code=upstream_resp.status_code
+                )
+            retries_left -= 1
+            logger.info(
+                "[OPENAI-PASSTHROUGH] dropped unsupported parameter %r for "
+                "model %s and retrying",
+                dropped,
+                body["model"],
+            )
         _info_log_upstream_response(
             path="/responses",
             status_code=upstream_resp.status_code,
@@ -297,20 +328,36 @@ async def chat_completions(
             media_type="text/event-stream",
         )
 
-    resp = await get_client().post(
-        upstream_url("/responses", base_url=base_url),
-        json=upstream_body,
-        headers=upstream_headers(extra, api_key=api_key),
-    )
-    if resp.status_code >= 400:
-        error_payload = _safe_json(resp)
-        _info_log_upstream_response(
-            path="/responses",
-            status_code=resp.status_code,
-            body=error_payload,
-            headers=resp.headers,
+    retries_left = MAX_UNSUPPORTED_PARAM_RETRIES
+    while True:
+        resp = await get_client().post(
+            upstream_url("/responses", base_url=base_url),
+            json=upstream_body,
+            headers=upstream_headers(extra, api_key=api_key),
         )
-        return JSONResponse(error_payload, status_code=resp.status_code)
+        if resp.status_code < 400:
+            break
+        error_payload = _safe_json(resp)
+        dropped = (
+            pop_unsupported_parameter(upstream_body, resp.status_code, error_payload)
+            if retries_left > 0
+            else None
+        )
+        if dropped is None:
+            _info_log_upstream_response(
+                path="/responses",
+                status_code=resp.status_code,
+                body=error_payload,
+                headers=resp.headers,
+            )
+            return JSONResponse(error_payload, status_code=resp.status_code)
+        retries_left -= 1
+        logger.info(
+            "[OPENAI-PASSTHROUGH] dropped unsupported parameter %r for "
+            "model %s and retrying",
+            dropped,
+            body["model"],
+        )
 
     data = resp.json()
     chat_data = response_to_chat_completion(data, model=body["model"])

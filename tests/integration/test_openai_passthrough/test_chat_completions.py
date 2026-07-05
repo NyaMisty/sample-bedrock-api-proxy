@@ -259,6 +259,190 @@ def test_chat_completions_normalizes_null_tool_required_fields(client, respx_moc
     assert parameters["properties"]["filters"]["required"] == []
 
 
+def test_unsupported_temperature_dropped_and_retried(client, respx_mock):
+    """xai.grok-4.3 400s on 'temperature' — proxy drops it and retries."""
+    err = {
+        "error": {
+            "code": "unsupported_parameter",
+            "message": (
+                "Unsupported parameter: 'temperature' is not supported "
+                "with this model."
+            ),
+            "param": "temperature",
+            "type": "invalid_request_error",
+        }
+    }
+    ok = {
+        "id": "resp-1",
+        "object": "response",
+        "model": "xai.grok-4.3",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hi"}],
+            }
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+    }
+    route = respx_mock.post("/responses").mock(
+        side_effect=[
+            httpx.Response(400, json=err),
+            httpx.Response(200, json=ok),
+        ]
+    )
+
+    r = client.post(
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "xai.grok-4.3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 1,
+        },
+    )
+
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "hi"
+    assert route.call_count == 2
+    first = json.loads(route.calls[0].request.content)
+    second = json.loads(route.calls[1].request.content)
+    assert first["temperature"] == 1
+    assert "temperature" not in second
+
+
+def test_streaming_unsupported_temperature_dropped_and_retried(client, respx_mock):
+    err = {
+        "error": {
+            "code": "unsupported_parameter",
+            "message": (
+                "Unsupported parameter: 'temperature' is not supported "
+                "with this model."
+            ),
+            "param": "temperature",
+            "type": "invalid_request_error",
+        }
+    }
+    sse_lines = [
+        'data: {"type":"response.created","response":{"id":"resp-x","model":"m"}}',
+        'data: {"type":"response.output_text.delta","delta":"hi"}',
+        'data: {"type":"response.completed","response":{"id":"resp-x","model":"m"}}',
+    ]
+    route = respx_mock.post("/responses").mock(
+        side_effect=[
+            httpx.Response(400, json=err),
+            httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content="\n".join(sse_lines).encode(),
+            ),
+        ]
+    )
+
+    with client.stream(
+        "POST",
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "model": "xai.grok-4.3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 1,
+            "stream": True,
+        },
+    ) as r:
+        assert r.status_code == 200
+        out = b"".join(r.iter_bytes())
+
+    assert b'"delta":{"content":"hi"}' in out
+    assert route.call_count == 2
+    assert "temperature" not in json.loads(route.calls[1].request.content)
+
+
+def test_learned_unsupported_param_skips_retry_on_second_request(
+    client, respx_mock
+):
+    """First request pays the 400+retry; second request strips proactively."""
+    err = {
+        "error": {
+            "code": "unsupported_parameter",
+            "message": (
+                "Unsupported parameter: 'temperature' is not supported "
+                "with this model."
+            ),
+            "param": "temperature",
+            "type": "invalid_request_error",
+        }
+    }
+    ok = {
+        "id": "resp-1",
+        "object": "response",
+        "model": "xai.grok-4.3",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hi"}],
+            }
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+    }
+    route = respx_mock.post("/responses").mock(
+        side_effect=[
+            httpx.Response(400, json=err),  # request 1, attempt 1
+            httpx.Response(200, json=ok),  # request 1, attempt 2 (retried)
+            httpx.Response(200, json=ok),  # request 2, attempt 1 (no retry)
+        ]
+    )
+    payload = {
+        "model": "xai.grok-4.3",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 1,
+    }
+
+    r1 = client.post(
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json=payload,
+    )
+    r2 = client.post(
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json=payload,
+    )
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    # 3 upstream calls total: 2 for the first request, only 1 for the second
+    assert route.call_count == 3
+    third = json.loads(route.calls[2].request.content)
+    assert "temperature" not in third
+
+
+def test_unsupported_parameter_not_in_body_returned_verbatim(client, respx_mock):
+    """If upstream names a param we never sent, don't retry-loop — surface the 400."""
+    err = {
+        "error": {
+            "code": "unsupported_parameter",
+            "message": "Unsupported parameter: 'foo' is not supported.",
+            "param": "foo",
+            "type": "invalid_request_error",
+        }
+    }
+    route = respx_mock.post("/responses").mock(
+        return_value=httpx.Response(400, json=err)
+    )
+
+    r = client.post(
+        "/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert r.status_code == 400
+    assert r.json() == err
+    assert route.call_count == 1
+
+
 def test_upstream_4xx_returned_verbatim(client, respx_mock, mock_usage_tracker):
     err_body = {
         "error": {"message": "model not found", "type": "invalid_request_error"}
