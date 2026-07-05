@@ -11,6 +11,7 @@ Uses ThreadPoolExecutor to run synchronous boto3 calls in separate threads,
 preventing blocking of the FastAPI event loop. This ensures health check
 endpoints remain responsive even when Bedrock API calls experience retries.
 """
+
 import asyncio
 import json
 import logging
@@ -37,7 +38,6 @@ from app.services.inference_profile_resolver import (
     get_inference_profile_resolver,
 )
 
-
 # Global thread pool and semaphore for Bedrock calls
 # Using module-level to share across BedrockService instances
 _bedrock_executor: Optional[ThreadPoolExecutor] = None
@@ -46,7 +46,9 @@ _executor_lock = threading.Lock()
 
 
 # Region/scope prefixes that precede the real provider segment in Bedrock IDs.
-_REGION_PREFIXES = frozenset({"global", "us", "eu", "apac", "ca", "sa", "af", "me", "cn"})
+_REGION_PREFIXES = frozenset(
+    {"global", "us", "eu", "apac", "ca", "sa", "af", "me", "cn"}
+)
 
 
 def _derive_provider(bedrock_model_id: str) -> str:
@@ -71,9 +73,11 @@ def _get_executor() -> ThreadPoolExecutor:
             if _bedrock_executor is None:
                 _bedrock_executor = ThreadPoolExecutor(
                     max_workers=settings.bedrock_thread_pool_size,
-                    thread_name_prefix="bedrock-"
+                    thread_name_prefix="bedrock-",
                 )
-                print(f"[BEDROCK] Created thread pool with {settings.bedrock_thread_pool_size} workers")
+                print(
+                    f"[BEDROCK] Created thread pool with {settings.bedrock_thread_pool_size} workers"
+                )
     return _bedrock_executor
 
 
@@ -82,8 +86,396 @@ def _get_semaphore() -> asyncio.Semaphore:
     global _bedrock_semaphore
     if _bedrock_semaphore is None:
         _bedrock_semaphore = asyncio.Semaphore(settings.bedrock_semaphore_size)
-        print(f"[BEDROCK] Created semaphore with limit {settings.bedrock_semaphore_size}")
+        print(
+            f"[BEDROCK] Created semaphore with limit {settings.bedrock_semaphore_size}"
+        )
     return _bedrock_semaphore
+
+
+def build_native_anthropic_body(
+    request: MessageRequest,
+    anthropic_beta: Optional[str] = None,
+    anthropic_version: str = "bedrock-2023-05-31",
+) -> Dict[str, Any]:
+    """
+    Convert MessageRequest to native Anthropic Messages API format.
+
+    Shared by the Bedrock InvokeModel path (``anthropic_version='bedrock-2023-05-31'``,
+    with ``anthropic_version`` and ``anthropic_beta`` carried in the request body)
+    and the direct-Anthropic backend (``anthropic_version='2023-06-01'``, where
+    ``anthropic_version``/``anthropic_beta`` are moved to HTTP headers by the
+    caller — see ``AnthropicBackendService._normalize_body``).
+
+    Args:
+        request: Anthropic MessageRequest
+        anthropic_beta: Optional comma-separated beta header string
+        anthropic_version: Anthropic API version stamp to embed in the body.
+            Bedrock requires this in the body; the direct API uses a header
+            instead (the caller pops it back out).
+
+    Returns:
+        Dictionary in native Anthropic Messages API format
+    """
+    native_request: Dict[str, Any] = {
+        "anthropic_version": anthropic_version,
+        # CountTokensRequest lacks max_tokens; default to 1 so the builder
+        # works for both MessageRequest and CountTokensRequest. Callers that
+        # don't need max_tokens (e.g. the count_tokens endpoint) pop it back
+        # out before sending.
+        "max_tokens": getattr(request, "max_tokens", 1),
+        "messages": [],
+    }
+
+    # Convert messages
+    for msg_idx, msg in enumerate(request.messages):
+        message_dict: Dict[str, Any] = {"role": msg.role}
+
+        # Handle content
+        if isinstance(msg.content, str):
+            message_dict["content"] = msg.content
+        else:
+            # Debug: Log content types BEFORE conversion to see Pydantic's order
+            if msg.role == "assistant":
+                pre_convert_types = []
+                for b in msg.content:
+                    if hasattr(b, "type"):
+                        pre_convert_types.append(b.type)
+                    elif isinstance(b, dict):
+                        pre_convert_types.append(b.get("type", "?"))
+                    else:
+                        pre_convert_types.append(type(b).__name__)
+                print(
+                    f"[BEDROCK NATIVE CONVERT] msg[{msg_idx}] assistant BEFORE convert: {pre_convert_types}"
+                )
+
+            # Convert content blocks to native format
+            content_list = []
+            for block in msg.content:
+                if hasattr(block, "model_dump"):
+                    block_dict = block.model_dump(exclude_none=True)
+                elif isinstance(block, dict):
+                    block_dict = dict(block)  # Make a copy to avoid mutating original
+                else:
+                    continue
+                # Strip 'caller' field from tool_use blocks - Bedrock doesn't accept it
+                # This is a PTC extension that's only valid in Anthropic API responses
+                if block_dict.get("type") == "tool_use" and "caller" in block_dict:
+                    block_dict = {k: v for k, v in block_dict.items() if k != "caller"}
+
+                # Convert web search / server tool content types for Bedrock compatibility.
+                # In multi-turn, the client sends back the proxy's response as history.
+                # Bedrock doesn't understand server_tool_use, web_search_tool_result, etc.
+                block_type = block_dict.get("type", "")
+
+                # Fallback audit markers (refusal-fallback flows) are
+                # client-side bookkeeping — strip before forwarding.
+                if block_type == "fallback":
+                    continue
+
+                # Web search server blocks in assistant messages: skip entirely.
+                # The text blocks already contain Claude's answer with full context.
+                # Keeping server_tool_use without matching tool_result would also error.
+                if msg.role == "assistant" and block_type in (
+                    "server_tool_use",
+                    "web_search_tool_result",
+                    "bash_code_execution_tool_result",
+                ):
+                    continue
+
+                # web_search_tool_result in user messages → tool_result
+                if block_type == "web_search_tool_result":
+                    ws_id = block_dict.get("tool_use_id", "")
+                    bedrock_id = (
+                        ws_id.replace("srvtoolu_", "toolu_", 1)
+                        if ws_id.startswith("srvtoolu_")
+                        else ws_id
+                    )
+                    ws_content = block_dict.get("content", [])
+                    if isinstance(ws_content, list):
+                        parts = []
+                        for sr in ws_content:
+                            if (
+                                isinstance(sr, dict)
+                                and sr.get("type") == "web_search_result"
+                            ):
+                                title = sr.get("title", "")
+                                url = sr.get("url", "")
+                                enc = sr.get("encrypted_content", "")
+                                try:
+                                    page = _ws_decode(enc) if enc else ""
+                                except Exception:
+                                    page = enc
+                                parts.append(
+                                    f"Title: {title}\nURL: {url}\nContent: {page}"
+                                )
+                        result_text = (
+                            "\n\n---\n\n".join(parts) if parts else "No results"
+                        )
+                    elif isinstance(ws_content, dict):
+                        result_text = (
+                            f"Error: {ws_content.get('error_code', 'unknown')}"
+                        )
+                    else:
+                        result_text = str(ws_content)
+                    block_dict = {
+                        "type": "tool_result",
+                        "tool_use_id": bedrock_id,
+                        "content": result_text,
+                    }
+                elif block_type == "text" and "citations" in block_dict:
+                    # Strip citations from text blocks - Bedrock doesn't support them
+                    block_dict = {
+                        k: v for k, v in block_dict.items() if k != "citations"
+                    }
+
+                content_list.append(block_dict)
+            message_dict["content"] = content_list
+
+            # Debug: Log content types for assistant messages to debug thinking block ordering
+            if msg.role == "assistant":
+                content_types = [b.get("type", "?") for b in content_list]
+                print(
+                    f"[BEDROCK NATIVE CONVERT] msg[{msg_idx}] assistant content_types: {content_types}"
+                )
+
+        native_request["messages"].append(message_dict)
+
+    # Add system message
+    if request.system:
+        if isinstance(request.system, str):
+            native_request["system"] = request.system
+        else:
+            # Convert list of SystemMessage to native format, preserving cache_control
+            system_parts = []
+            for sys_msg in request.system:
+                if hasattr(sys_msg, "model_dump"):
+                    # Use model_dump to preserve all fields including cache_control
+                    system_parts.append(sys_msg.model_dump(exclude_none=True))
+                elif isinstance(sys_msg, dict):
+                    system_parts.append(sys_msg)
+                elif hasattr(sys_msg, "text"):
+                    # Fallback for objects without model_dump
+                    sys_dict: Dict[str, Any] = {"type": "text", "text": sys_msg.text}
+                    if hasattr(sys_msg, "cache_control") and sys_msg.cache_control:
+                        cc = sys_msg.cache_control
+                        if hasattr(cc, "model_dump"):
+                            sys_dict["cache_control"] = cc.model_dump(exclude_none=True)
+                        else:
+                            sys_dict["cache_control"] = cc
+                    system_parts.append(sys_dict)
+            native_request["system"] = system_parts
+
+    # Add optional parameters (use getattr so CountTokensRequest, which
+    # omits these fields, doesn't AttributeError).
+    if getattr(request, "temperature", None) is not None:
+        native_request["temperature"] = request.temperature
+
+    if getattr(request, "top_p", None) is not None:
+        native_request["top_p"] = request.top_p
+
+    if getattr(request, "top_k", None) is not None:
+        native_request["top_k"] = request.top_k
+
+    stop_sequences = getattr(request, "stop_sequences", None)
+    if stop_sequences:
+        native_request["stop_sequences"] = stop_sequences
+
+    # Add tools if present
+    if request.tools and settings.enable_tool_use:
+        tools_list = []
+        # Special tool types that should be passed through (beta features)
+        # These are recognized by Bedrock natively
+        special_tool_types = {
+            "tool_search_tool_regex",
+            "tool_search_tool",
+        }
+        # Mapping from Anthropic tool types to Bedrock tool types
+        # Anthropic SDK may use versioned types that Bedrock doesn't recognize
+        tool_type_mapping = {
+            "tool_search_tool_regex_20251119": "tool_search_tool_regex",
+            "tool_search_tool_20251119": "tool_search_tool",
+        }
+        for tool in request.tools:
+            if isinstance(tool, dict):
+                tool_type = tool.get("type")
+                # Skip PTC code_execution tools
+                if tool_type == "code_execution_20250825":
+                    continue
+                # Skip web search tools (handled by WebSearchService)
+                if tool_type in WEB_SEARCH_TOOL_TYPES:
+                    continue
+                # Map versioned tool types to Bedrock-recognized types
+                mapped_type = tool_type_mapping.get(tool_type, tool_type)
+                # Pass through special tool types (beta features)
+                if mapped_type in special_tool_types:
+                    # Create a copy with the mapped type
+                    tool_copy = dict(tool)
+                    if mapped_type != tool_type:
+                        tool_copy["type"] = mapped_type
+                        print(
+                            f"[BEDROCK NATIVE] Mapped tool type: {tool_type} → {mapped_type}"
+                        )
+                    else:
+                        print(
+                            f"[BEDROCK NATIVE] Passing through special tool type: {tool_type}"
+                        )
+                    tools_list.append(tool_copy)
+                    continue
+                # Regular tool conversion
+                tool_dict: Dict[str, Any] = {
+                    "name": tool.get("name"),
+                    "description": tool.get("description", ""),
+                    "input_schema": tool.get("input_schema", {}),
+                }
+                # Include input_examples if present (for beta feature)
+                if tool.get("input_examples"):
+                    tool_dict["input_examples"] = tool["input_examples"]
+                # Include defer_loading if present (for tool search beta)
+                if tool.get("defer_loading") is not None:
+                    tool_dict["defer_loading"] = tool["defer_loading"]
+                # Include cache_control if present (for prompt caching)
+                if tool.get("cache_control"):
+                    tool_dict["cache_control"] = tool["cache_control"]
+                tools_list.append(tool_dict)
+            elif hasattr(tool, "name"):
+                tool_type = getattr(tool, "type", None)
+                # Skip PTC code_execution tools
+                if tool_type == "code_execution_20250825":
+                    continue
+                # Skip web search tools (handled by WebSearchService)
+                if tool_type in WEB_SEARCH_TOOL_TYPES:
+                    continue
+                # Map versioned tool types to Bedrock-recognized types
+                mapped_type = (
+                    tool_type_mapping.get(tool_type, tool_type) if tool_type else None
+                )
+                # Pass through special tool types
+                if mapped_type in special_tool_types:
+                    tool_data = (
+                        tool.model_dump() if hasattr(tool, "model_dump") else vars(tool)
+                    )
+                    if mapped_type != tool_type:
+                        tool_data["type"] = mapped_type
+                        print(
+                            f"[BEDROCK NATIVE] Mapped tool type: {tool_type} → {mapped_type}"
+                        )
+                    else:
+                        print(
+                            f"[BEDROCK NATIVE] Passing through special tool type: {tool_type}"
+                        )
+                    tools_list.append(tool_data)
+                    continue
+                # Regular tool conversion
+                tool_dict_obj: Dict[str, Any] = {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": (
+                        tool.input_schema.model_dump()
+                        if hasattr(tool.input_schema, "model_dump")
+                        else tool.input_schema
+                    ),
+                }
+                # Include input_examples if present
+                if hasattr(tool, "input_examples") and tool.input_examples:
+                    tool_dict_obj["input_examples"] = tool.input_examples
+                # Include defer_loading if present
+                if hasattr(tool, "defer_loading") and tool.defer_loading is not None:
+                    tool_dict_obj["defer_loading"] = tool.defer_loading
+                # Include cache_control if present (for prompt caching)
+                if hasattr(tool, "cache_control") and tool.cache_control:
+                    cc = tool.cache_control
+                    if hasattr(cc, "model_dump"):
+                        tool_dict_obj["cache_control"] = cc.model_dump(
+                            exclude_none=True
+                        )
+                    else:
+                        tool_dict_obj["cache_control"] = cc
+                tools_list.append(tool_dict_obj)
+
+        if tools_list:
+            native_request["tools"] = tools_list
+
+    # Add tool_choice if present
+    if getattr(request, "tool_choice", None):
+        native_request["tool_choice"] = request.tool_choice
+
+    # Add thinking configuration if enabled
+    if getattr(request, "thinking", None) and settings.enable_extended_thinking:
+        native_request["thinking"] = request.thinking
+
+    # Add metadata if present
+    if getattr(request, "metadata", None):
+        native_request["metadata"] = (
+            request.metadata.model_dump()
+            if hasattr(request.metadata, "model_dump")
+            else request.metadata
+        )
+
+    # Add output_config if present (e.g., effort level)
+    if getattr(request, "output_config", None):
+        native_request["output_config"] = request.output_config
+
+    # Add context_management if present (e.g., compact-2026-01-12 beta)
+    if getattr(request, "context_management", None):
+        native_request["context_management"] = request.context_management
+
+    # Forward fallback credit token (fallback-credit-2026-06-09 beta) so a
+    # retry after a refusal is repriced against the refused request's cache
+    if getattr(request, "fallback_credit_token", None):
+        native_request["fallback_credit_token"] = request.fallback_credit_token
+
+    # Auto-inject advanced-tool-use beta header if tools contain defer_loading
+    # but the client didn't send the required beta header.
+    # This prevents Bedrock from rejecting defer_loading with:
+    #   "tools.X.custom.defer_loading: Extra inputs are not permitted"
+    TOOL_SEARCH_BETA = "advanced-tool-use-2025-11-20"
+    if request.tools and settings.enable_tool_use:
+        has_defer_loading = any(
+            (isinstance(t, dict) and t.get("defer_loading") is not None)
+            or (
+                hasattr(t, "defer_loading")
+                and getattr(t, "defer_loading", None) is not None
+            )
+            for t in request.tools
+        )
+        if has_defer_loading:
+            beta_str = anthropic_beta or ""
+            if TOOL_SEARCH_BETA not in beta_str:
+                anthropic_beta = f"{beta_str},{TOOL_SEARCH_BETA}".strip(",")
+                print(
+                    f"[BEDROCK NATIVE] Auto-injected {TOOL_SEARCH_BETA} beta header: defer_loading detected but beta header missing"
+                )
+
+    # Add beta headers from client
+    # Rules loaded from DynamoDB (blocklist → filter, mapping → translate, else → passthrough)
+    bedrock_beta = []
+
+    if anthropic_beta:
+        from app.db.beta_header_cache import BetaHeaderConfigCache
+
+        cache = BetaHeaderConfigCache.instance()
+        blocklist = cache.get_blocklist()
+        mapping = cache.get_mapping()
+
+        beta_values = [b.strip() for b in anthropic_beta.split(",") if b.strip()]
+        for beta_value in beta_values:
+            if beta_value in blocklist:
+                print(
+                    f"[BEDROCK NATIVE] Filtering out unsupported beta header: {beta_value}"
+                )
+            elif beta_value in mapping:
+                mapped = mapping[beta_value]
+                bedrock_beta.extend(mapped)
+                print(f"[BEDROCK NATIVE] Mapped beta header '{beta_value}' → {mapped}")
+            else:
+                bedrock_beta.append(beta_value)
+                print(f"[BEDROCK NATIVE] Passing through beta header: {beta_value}")
+
+    if bedrock_beta:
+        native_request["anthropic_beta"] = bedrock_beta
+        print(f"[BEDROCK NATIVE] Added anthropic_beta: {bedrock_beta}")
+
+    return native_request
 
 
 class BedrockService:
@@ -135,6 +527,7 @@ class BedrockService:
         # Initialize DynamoDB client if not provided
         if dynamodb_client is None:
             from app.db.dynamodb import DynamoDBClient
+
             dynamodb_client = DynamoDBClient()
 
         self.dynamodb_client = dynamodb_client
@@ -142,7 +535,9 @@ class BedrockService:
         self.bedrock_to_anthropic = BedrockToAnthropicConverter()
 
         # Multi-provider client cache with TTL (5 min)
-        self._provider_clients: Dict[str, Any] = {}  # provider_id → (client, created_time)
+        self._provider_clients: Dict[str, Any] = (
+            {}
+        )  # provider_id → (client, created_time)
         self._provider_clients_lock = threading.Lock()
         self._provider_client_ttl = 300  # 5 minutes
         self._provider_manager = None  # Lazy-loaded
@@ -154,10 +549,15 @@ class BedrockService:
         # api_key=None) falls back to globals, preserving existing behavior.
         self._openai_use_responses = openai_use_responses
         self._openai_compat_service = None
-        use_global = settings.enable_openai_compat and settings.openai_api_key and settings.openai_base_url
+        use_global = (
+            settings.enable_openai_compat
+            and settings.openai_api_key
+            and settings.openai_base_url
+        )
         use_override = bool(openai_base_url and openai_api_key)
         if use_global or use_override:
             from app.services.openai_compat_service import OpenAICompatService
+
             self._openai_compat_service = OpenAICompatService(
                 base_url=openai_base_url,
                 api_key=openai_api_key,
@@ -166,6 +566,35 @@ class BedrockService:
             print(
                 f"[BEDROCK] OpenAI-compat mode enabled, "
                 f"endpoint={endpoint_source}, responses={openai_use_responses}"
+            )
+
+        # Global backend selection (BACKEND_MODE). When not 'bedrock', ALL
+        # models route to the selected backend via short-circuits at the top
+        # of invoke_model / invoke_model_stream / _invoke_model_sync_inner /
+        # count_tokens, bypassing the boto3 bedrock-runtime path entirely.
+        self._backend_mode = settings.backend_mode
+        self._anthropic_backend_service = None
+        if self._backend_mode == "anthropic":
+            # Validation already enforced by Settings.validate_backend_mode.
+            from app.services.anthropic_backend_service import AnthropicBackendService
+
+            self._anthropic_backend_service = AnthropicBackendService(
+                base_url=settings.anthropic_base_url,
+                api_key=settings.anthropic_api_key,
+            )
+            print(
+                f"[BEDROCK] Anthropic direct backend enabled, base_url={settings.anthropic_base_url}"
+            )
+        elif self._backend_mode == "openai":
+            # Force-enable the compat service even if global
+            # enable_openai_compat is False — BACKEND_MODE=openai means ALL
+            # models (including claude-*) must route to the OpenAI endpoint.
+            if not self._openai_compat_service:
+                from app.services.openai_compat_service import OpenAICompatService
+
+                self._openai_compat_service = OpenAICompatService()
+            print(
+                "[BEDROCK] OpenAI global backend enabled (all models route to OpenAI compat)"
             )
 
     def _is_claude_model(self, model_id: str) -> bool:
@@ -184,6 +613,7 @@ class BedrockService:
         """Lazy-load ProviderManager."""
         if self._provider_manager is None:
             from app.db.provider_manager import ProviderManager
+
             self._provider_manager = ProviderManager(
                 dynamodb_resource=self.dynamodb_client.dynamodb,
                 table_name=settings.dynamodb_providers_table,
@@ -217,6 +647,7 @@ class BedrockService:
     def _create_provider_client(self, provider_id: str):
         """Create a boto3 bedrock-runtime client for a specific provider."""
         import os
+
         mgr = self._get_provider_manager()
         provider = mgr.get_provider(provider_id)
         if not provider or not provider.get("is_active", False):
@@ -288,7 +719,10 @@ class BedrockService:
         """
         Convert MessageRequest to native Anthropic Messages API format.
 
-        This format is used for InvokeModel API with Claude models.
+        This format is used for InvokeModel API with Claude models. Delegates to
+        the module-level :func:`build_native_anthropic_body` so the same body
+        builder can be reused by the direct-Anthropic backend
+        (``AnthropicBackendService``) with a different ``anthropic_version``.
 
         Args:
             request: Anthropic MessageRequest
@@ -297,312 +731,11 @@ class BedrockService:
         Returns:
             Dictionary in native Anthropic Messages API format
         """
-        native_request: Dict[str, Any] = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": request.max_tokens,
-            "messages": [],
-        }
+        return build_native_anthropic_body(request, anthropic_beta)
 
-        # Convert messages
-        for msg_idx, msg in enumerate(request.messages):
-            message_dict: Dict[str, Any] = {"role": msg.role}
-
-            # Handle content
-            if isinstance(msg.content, str):
-                message_dict["content"] = msg.content
-            else:
-                # Debug: Log content types BEFORE conversion to see Pydantic's order
-                if msg.role == "assistant":
-                    pre_convert_types = []
-                    for b in msg.content:
-                        if hasattr(b, "type"):
-                            pre_convert_types.append(b.type)
-                        elif isinstance(b, dict):
-                            pre_convert_types.append(b.get("type", "?"))
-                        else:
-                            pre_convert_types.append(type(b).__name__)
-                    print(f"[BEDROCK NATIVE CONVERT] msg[{msg_idx}] assistant BEFORE convert: {pre_convert_types}")
-
-                # Convert content blocks to native format
-                content_list = []
-                for block in msg.content:
-                    if hasattr(block, "model_dump"):
-                        block_dict = block.model_dump(exclude_none=True)
-                    elif isinstance(block, dict):
-                        block_dict = dict(block)  # Make a copy to avoid mutating original
-                    else:
-                        continue
-                    # Strip 'caller' field from tool_use blocks - Bedrock doesn't accept it
-                    # This is a PTC extension that's only valid in Anthropic API responses
-                    if block_dict.get("type") == "tool_use" and "caller" in block_dict:
-                        block_dict = {k: v for k, v in block_dict.items() if k != "caller"}
-
-                    # Convert web search / server tool content types for Bedrock compatibility.
-                    # In multi-turn, the client sends back the proxy's response as history.
-                    # Bedrock doesn't understand server_tool_use, web_search_tool_result, etc.
-                    block_type = block_dict.get("type", "")
-
-                    # Fallback audit markers (refusal-fallback flows) are
-                    # client-side bookkeeping — strip before forwarding.
-                    if block_type == "fallback":
-                        continue
-
-                    # Web search server blocks in assistant messages: skip entirely.
-                    # The text blocks already contain Claude's answer with full context.
-                    # Keeping server_tool_use without matching tool_result would also error.
-                    if msg.role == "assistant" and block_type in (
-                        "server_tool_use", "web_search_tool_result",
-                        "bash_code_execution_tool_result",
-                    ):
-                        continue
-
-                    # web_search_tool_result in user messages → tool_result
-                    if block_type == "web_search_tool_result":
-                        ws_id = block_dict.get("tool_use_id", "")
-                        bedrock_id = ws_id.replace("srvtoolu_", "toolu_", 1) if ws_id.startswith("srvtoolu_") else ws_id
-                        ws_content = block_dict.get("content", [])
-                        if isinstance(ws_content, list):
-                            parts = []
-                            for sr in ws_content:
-                                if isinstance(sr, dict) and sr.get("type") == "web_search_result":
-                                    title = sr.get("title", "")
-                                    url = sr.get("url", "")
-                                    enc = sr.get("encrypted_content", "")
-                                    try:
-                                        page = _ws_decode(enc) if enc else ""
-                                    except Exception:
-                                        page = enc
-                                    parts.append(f"Title: {title}\nURL: {url}\nContent: {page}")
-                            result_text = "\n\n---\n\n".join(parts) if parts else "No results"
-                        elif isinstance(ws_content, dict):
-                            result_text = f"Error: {ws_content.get('error_code', 'unknown')}"
-                        else:
-                            result_text = str(ws_content)
-                        block_dict = {
-                            "type": "tool_result",
-                            "tool_use_id": bedrock_id,
-                            "content": result_text,
-                        }
-                    elif block_type == "text" and "citations" in block_dict:
-                        # Strip citations from text blocks - Bedrock doesn't support them
-                        block_dict = {k: v for k, v in block_dict.items() if k != "citations"}
-
-                    content_list.append(block_dict)
-                message_dict["content"] = content_list
-
-                # Debug: Log content types for assistant messages to debug thinking block ordering
-                if msg.role == "assistant":
-                    content_types = [b.get("type", "?") for b in content_list]
-                    print(f"[BEDROCK NATIVE CONVERT] msg[{msg_idx}] assistant content_types: {content_types}")
-
-            native_request["messages"].append(message_dict)
-
-        # Add system message
-        if request.system:
-            if isinstance(request.system, str):
-                native_request["system"] = request.system
-            else:
-                # Convert list of SystemMessage to native format, preserving cache_control
-                system_parts = []
-                for sys_msg in request.system:
-                    if hasattr(sys_msg, "model_dump"):
-                        # Use model_dump to preserve all fields including cache_control
-                        system_parts.append(sys_msg.model_dump(exclude_none=True))
-                    elif isinstance(sys_msg, dict):
-                        system_parts.append(sys_msg)
-                    elif hasattr(sys_msg, "text"):
-                        # Fallback for objects without model_dump
-                        sys_dict: Dict[str, Any] = {"type": "text", "text": sys_msg.text}
-                        if hasattr(sys_msg, "cache_control") and sys_msg.cache_control:
-                            cc = sys_msg.cache_control
-                            if hasattr(cc, "model_dump"):
-                                sys_dict["cache_control"] = cc.model_dump(exclude_none=True)
-                            else:
-                                sys_dict["cache_control"] = cc
-                        system_parts.append(sys_dict)
-                native_request["system"] = system_parts
-
-        # Add optional parameters
-        if request.temperature is not None:
-            native_request["temperature"] = request.temperature
-
-        if request.top_p is not None:
-            native_request["top_p"] = request.top_p
-
-        if request.top_k is not None:
-            native_request["top_k"] = request.top_k
-
-        if request.stop_sequences:
-            native_request["stop_sequences"] = request.stop_sequences
-
-        # Add tools if present
-        if request.tools and settings.enable_tool_use:
-            tools_list = []
-            # Special tool types that should be passed through (beta features)
-            # These are recognized by Bedrock natively
-            special_tool_types = {
-                "tool_search_tool_regex",
-                "tool_search_tool",
-            }
-            # Mapping from Anthropic tool types to Bedrock tool types
-            # Anthropic SDK may use versioned types that Bedrock doesn't recognize
-            tool_type_mapping = {
-                "tool_search_tool_regex_20251119": "tool_search_tool_regex",
-                "tool_search_tool_20251119": "tool_search_tool",
-            }
-            for tool in request.tools:
-                if isinstance(tool, dict):
-                    tool_type = tool.get("type")
-                    # Skip PTC code_execution tools
-                    if tool_type == "code_execution_20250825":
-                        continue
-                    # Skip web search tools (handled by WebSearchService)
-                    if tool_type in WEB_SEARCH_TOOL_TYPES:
-                        continue
-                    # Map versioned tool types to Bedrock-recognized types
-                    mapped_type = tool_type_mapping.get(tool_type, tool_type)
-                    # Pass through special tool types (beta features)
-                    if mapped_type in special_tool_types:
-                        # Create a copy with the mapped type
-                        tool_copy = dict(tool)
-                        if mapped_type != tool_type:
-                            tool_copy["type"] = mapped_type
-                            print(f"[BEDROCK NATIVE] Mapped tool type: {tool_type} → {mapped_type}")
-                        else:
-                            print(f"[BEDROCK NATIVE] Passing through special tool type: {tool_type}")
-                        tools_list.append(tool_copy)
-                        continue
-                    # Regular tool conversion
-                    tool_dict: Dict[str, Any] = {
-                        "name": tool.get("name"),
-                        "description": tool.get("description", ""),
-                        "input_schema": tool.get("input_schema", {}),
-                    }
-                    # Include input_examples if present (for beta feature)
-                    if tool.get("input_examples"):
-                        tool_dict["input_examples"] = tool["input_examples"]
-                    # Include defer_loading if present (for tool search beta)
-                    if tool.get("defer_loading") is not None:
-                        tool_dict["defer_loading"] = tool["defer_loading"]
-                    # Include cache_control if present (for prompt caching)
-                    if tool.get("cache_control"):
-                        tool_dict["cache_control"] = tool["cache_control"]
-                    tools_list.append(tool_dict)
-                elif hasattr(tool, "name"):
-                    tool_type = getattr(tool, "type", None)
-                    # Skip PTC code_execution tools
-                    if tool_type == "code_execution_20250825":
-                        continue
-                    # Skip web search tools (handled by WebSearchService)
-                    if tool_type in WEB_SEARCH_TOOL_TYPES:
-                        continue
-                    # Map versioned tool types to Bedrock-recognized types
-                    mapped_type = tool_type_mapping.get(tool_type, tool_type) if tool_type else None
-                    # Pass through special tool types
-                    if mapped_type in special_tool_types:
-                        tool_data = tool.model_dump() if hasattr(tool, "model_dump") else vars(tool)
-                        if mapped_type != tool_type:
-                            tool_data["type"] = mapped_type
-                            print(f"[BEDROCK NATIVE] Mapped tool type: {tool_type} → {mapped_type}")
-                        else:
-                            print(f"[BEDROCK NATIVE] Passing through special tool type: {tool_type}")
-                        tools_list.append(tool_data)
-                        continue
-                    # Regular tool conversion
-                    tool_dict_obj: Dict[str, Any] = {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "input_schema": tool.input_schema.model_dump() if hasattr(tool.input_schema, "model_dump") else tool.input_schema,
-                    }
-                    # Include input_examples if present
-                    if hasattr(tool, "input_examples") and tool.input_examples:
-                        tool_dict_obj["input_examples"] = tool.input_examples
-                    # Include defer_loading if present
-                    if hasattr(tool, "defer_loading") and tool.defer_loading is not None:
-                        tool_dict_obj["defer_loading"] = tool.defer_loading
-                    # Include cache_control if present (for prompt caching)
-                    if hasattr(tool, "cache_control") and tool.cache_control:
-                        cc = tool.cache_control
-                        if hasattr(cc, "model_dump"):
-                            tool_dict_obj["cache_control"] = cc.model_dump(exclude_none=True)
-                        else:
-                            tool_dict_obj["cache_control"] = cc
-                    tools_list.append(tool_dict_obj)
-
-            if tools_list:
-                native_request["tools"] = tools_list
-
-        # Add tool_choice if present
-        if request.tool_choice:
-            native_request["tool_choice"] = request.tool_choice
-
-        # Add thinking configuration if enabled
-        if request.thinking and settings.enable_extended_thinking:
-            native_request["thinking"] = request.thinking
-
-        # Add metadata if present
-        if request.metadata:
-            native_request["metadata"] = request.metadata.model_dump() if hasattr(request.metadata, "model_dump") else request.metadata
-
-        # Add output_config if present (e.g., effort level)
-        if request.output_config:
-            native_request["output_config"] = request.output_config
-
-        # Add context_management if present (e.g., compact-2026-01-12 beta)
-        if request.context_management:
-            native_request["context_management"] = request.context_management
-
-        # Forward fallback credit token (fallback-credit-2026-06-09 beta) so a
-        # retry after a refusal is repriced against the refused request's cache
-        if request.fallback_credit_token:
-            native_request["fallback_credit_token"] = request.fallback_credit_token
-
-        # Auto-inject advanced-tool-use beta header if tools contain defer_loading
-        # but the client didn't send the required beta header.
-        # This prevents Bedrock from rejecting defer_loading with:
-        #   "tools.X.custom.defer_loading: Extra inputs are not permitted"
-        TOOL_SEARCH_BETA = "advanced-tool-use-2025-11-20"
-        if request.tools and settings.enable_tool_use:
-            has_defer_loading = any(
-                (isinstance(t, dict) and t.get("defer_loading") is not None) or
-                (hasattr(t, "defer_loading") and getattr(t, "defer_loading", None) is not None)
-                for t in request.tools
-            )
-            if has_defer_loading:
-                beta_str = anthropic_beta or ""
-                if TOOL_SEARCH_BETA not in beta_str:
-                    anthropic_beta = f"{beta_str},{TOOL_SEARCH_BETA}".strip(",")
-                    print(f"[BEDROCK NATIVE] Auto-injected {TOOL_SEARCH_BETA} beta header: defer_loading detected but beta header missing")
-
-        # Add beta headers from client
-        # Rules loaded from DynamoDB (blocklist → filter, mapping → translate, else → passthrough)
-        bedrock_beta = []
-
-        if anthropic_beta:
-            from app.db.beta_header_cache import BetaHeaderConfigCache
-            cache = BetaHeaderConfigCache.instance()
-            blocklist = cache.get_blocklist()
-            mapping = cache.get_mapping()
-
-            beta_values = [b.strip() for b in anthropic_beta.split(",") if b.strip()]
-            for beta_value in beta_values:
-                if beta_value in blocklist:
-                    print(f"[BEDROCK NATIVE] Filtering out unsupported beta header: {beta_value}")
-                elif beta_value in mapping:
-                    mapped = mapping[beta_value]
-                    bedrock_beta.extend(mapped)
-                    print(f"[BEDROCK NATIVE] Mapped beta header '{beta_value}' → {mapped}")
-                else:
-                    bedrock_beta.append(beta_value)
-                    print(f"[BEDROCK NATIVE] Passing through beta header: {beta_value}")
-
-        if bedrock_beta:
-            native_request["anthropic_beta"] = bedrock_beta
-            print(f"[BEDROCK NATIVE] Added anthropic_beta: {bedrock_beta}")
-
-        return native_request
-
-    def _apply_cache_ttl(self, body: dict, api_key_cache_ttl: Optional[str] = None) -> None:
+    def _apply_cache_ttl(
+        self, body: dict, api_key_cache_ttl: Optional[str] = None
+    ) -> None:
         """
         Apply cache TTL to all cache_control blocks in the native Anthropic request body.
 
@@ -664,9 +797,13 @@ class BedrockService:
                 _strip(tool)
 
     async def invoke_model(
-        self, request: MessageRequest, request_id: Optional[str] = None,
-        service_tier: Optional[str] = None, anthropic_beta: Optional[str] = None,
-        cache_ttl: Optional[str] = None, provider_id: Optional[str] = None
+        self,
+        request: MessageRequest,
+        request_id: Optional[str] = None,
+        service_tier: Optional[str] = None,
+        anthropic_beta: Optional[str] = None,
+        cache_ttl: Optional[str] = None,
+        provider_id: Optional[str] = None,
     ) -> MessageResponse:
         """
         Invoke Bedrock model (non-streaming) asynchronously.
@@ -686,11 +823,28 @@ class BedrockService:
         Raises:
             Exception: If Bedrock API call fails
         """
+        # Global backend short-circuit (BACKEND_MODE != bedrock). When a
+        # non-Bedrock backend is selected, ALL models — including claude-* —
+        # route here, bypassing the _is_claude_model branch and the Bedrock
+        # semaphore/executor below.
+        if self._anthropic_backend_service is not None:  # mode == "anthropic"
+            return await self._anthropic_backend_service.invoke_model(
+                request, request_id
+            )
+        if self._backend_mode == "openai" and self._openai_compat_service:
+            if self._openai_use_responses:
+                return await self._openai_compat_service.invoke_responses(
+                    request, request_id
+                )
+            return await self._openai_compat_service.invoke_model(request, request_id)
+
         # Route non-Claude models to OpenAI-compat BEFORE acquiring Bedrock semaphore
         # (OpenAI-compat service manages its own semaphore)
         if not self._is_claude_model(request.model) and self._openai_compat_service:
             if self._openai_use_responses:
-                return await self._openai_compat_service.invoke_responses(request, request_id)
+                return await self._openai_compat_service.invoke_responses(
+                    request, request_id
+                )
             return await self._openai_compat_service.invoke_model(request, request_id)
 
         semaphore = _get_semaphore()
@@ -702,6 +856,7 @@ class BedrockService:
             _otel_ctx = None
             if settings.enable_tracing:
                 from app.tracing.context import propagate_context_to_thread
+
                 _otel_ctx = propagate_context_to_thread()
 
             return await loop.run_in_executor(
@@ -713,14 +868,18 @@ class BedrockService:
                 anthropic_beta,
                 _otel_ctx,
                 cache_ttl,
-                provider_id
+                provider_id,
             )
 
     def _invoke_model_sync(
-        self, request: MessageRequest, request_id: Optional[str] = None,
-        service_tier: Optional[str] = None, anthropic_beta: Optional[str] = None,
-        otel_ctx=None, cache_ttl: Optional[str] = None,
-        provider_id: Optional[str] = None
+        self,
+        request: MessageRequest,
+        request_id: Optional[str] = None,
+        service_tier: Optional[str] = None,
+        anthropic_beta: Optional[str] = None,
+        otel_ctx=None,
+        cache_ttl: Optional[str] = None,
+        provider_id: Optional[str] = None,
     ) -> MessageResponse:
         """
         Synchronous Bedrock model invocation (runs in thread pool).
@@ -744,35 +903,70 @@ class BedrockService:
         _otel_token = None
         if otel_ctx is not None:
             from app.tracing.context import attach_context_in_thread
+
             _otel_token = attach_context_in_thread(otel_ctx)
 
         try:
-            return self._invoke_model_sync_inner(request, request_id, service_tier, anthropic_beta, cache_ttl=cache_ttl, provider_id=provider_id)
+            return self._invoke_model_sync_inner(
+                request,
+                request_id,
+                service_tier,
+                anthropic_beta,
+                cache_ttl=cache_ttl,
+                provider_id=provider_id,
+            )
         finally:
             if _otel_token is not None:
                 from app.tracing.context import detach_context_in_thread
+
                 detach_context_in_thread(_otel_token)
 
     def _invoke_model_sync_inner(
-        self, request: MessageRequest, request_id: Optional[str] = None,
-        service_tier: Optional[str] = None, anthropic_beta: Optional[str] = None,
-        cache_ttl: Optional[str] = None, provider_id: Optional[str] = None
+        self,
+        request: MessageRequest,
+        request_id: Optional[str] = None,
+        service_tier: Optional[str] = None,
+        anthropic_beta: Optional[str] = None,
+        cache_ttl: Optional[str] = None,
+        provider_id: Optional[str] = None,
     ) -> MessageResponse:
         """Inner sync invocation after OTEL context is attached."""
+        # Global backend short-circuit (defensive — the async entry points
+        # already handle this; this guards any direct sync caller).
+        if self._anthropic_backend_service is not None:  # mode == "anthropic"
+            return self._anthropic_backend_service.invoke_model_sync(
+                request, request_id
+            )
+        if self._backend_mode == "openai" and self._openai_compat_service:
+            return self._openai_compat_service.invoke_model_sync(request, request_id)
+
         # Route Claude models to InvokeModel API for better feature support
         if self._is_claude_model(request.model):
             print(f"[BEDROCK] Using InvokeModel API for Claude model: {request.model}")
-            return self._invoke_model_native_sync(request, request_id, service_tier, anthropic_beta, cache_ttl=cache_ttl, provider_id=provider_id)
+            return self._invoke_model_native_sync(
+                request,
+                request_id,
+                service_tier,
+                anthropic_beta,
+                cache_ttl=cache_ttl,
+                provider_id=provider_id,
+            )
 
         # Route to OpenAI-compat service if enabled
         if self._openai_compat_service:
-            print(f"[BEDROCK] Using OpenAI Chat Completions API for non-Claude model: {request.model}")
+            print(
+                f"[BEDROCK] Using OpenAI Chat Completions API for non-Claude model: {request.model}"
+            )
             return self._openai_compat_service.invoke_model_sync(request, request_id)
 
-        print(f"[BEDROCK] Converting request to Bedrock format for request {request_id}")
+        print(
+            f"[BEDROCK] Converting request to Bedrock format for request {request_id}"
+        )
 
         # Convert request to Bedrock format (with beta header mapping)
-        bedrock_request = self.anthropic_to_bedrock.convert_request(request, anthropic_beta)
+        bedrock_request = self.anthropic_to_bedrock.convert_request(
+            request, anthropic_beta
+        )
 
         # Determine service tier to use
         effective_service_tier = service_tier or settings.default_service_tier
@@ -798,8 +992,10 @@ class BedrockService:
             print(f"[BEDROCK] Received response from Bedrock")
             print(f"  - Stop reason: {response.get('stopReason')}")
             print(f"  - Usage: {response.get('usage')}")
-            service_tier_resp = response.get('serviceTier', {})
-            print(f"  - Service tier used: {service_tier_resp.get('type', 'default') if isinstance(service_tier_resp, dict) else service_tier_resp}")
+            service_tier_resp = response.get("serviceTier", {})
+            print(
+                f"  - Service tier used: {service_tier_resp.get('type', 'default') if isinstance(service_tier_resp, dict) else service_tier_resp}"
+            )
 
             # Convert response back to Anthropic format
             message_id = request_id or f"msg_{uuid4().hex}"
@@ -821,11 +1017,18 @@ class BedrockService:
 
             # Check if the error is related to serviceTier not being supported
             # If so, retry with default tier
-            if (effective_service_tier and effective_service_tier != "default" and
-                ("serviceTier" in error_message.lower() or
-                 "service tier" in error_message.lower() or
-                 "does not support" in error_message.lower())):
-                print(f"[BEDROCK] Service tier '{effective_service_tier}' not supported, retrying with 'default'...")
+            if (
+                effective_service_tier
+                and effective_service_tier != "default"
+                and (
+                    "serviceTier" in error_message.lower()
+                    or "service tier" in error_message.lower()
+                    or "does not support" in error_message.lower()
+                )
+            ):
+                print(
+                    f"[BEDROCK] Service tier '{effective_service_tier}' not supported, retrying with 'default'..."
+                )
                 # Remove serviceTier and retry
                 bedrock_request.pop("serviceTier", None)
                 try:
@@ -842,7 +1045,9 @@ class BedrockService:
                 except ClientError as retry_error:
                     retry_code = retry_error.response["Error"]["Code"]
                     retry_message = retry_error.response["Error"]["Message"]
-                    print(f"[ERROR] Retry with default tier also failed: {retry_code}: {retry_message}")
+                    print(
+                        f"[ERROR] Retry with default tier also failed: {retry_code}: {retry_message}"
+                    )
                     raise map_bedrock_error(retry_code, retry_message)
                 except Exception as retry_error:
                     print(f"[ERROR] Retry with default tier also failed: {retry_error}")
@@ -855,23 +1060,29 @@ class BedrockService:
             # Re-raise our custom exceptions as-is
             raise
         except Exception as e:
-            print(f"\n[ERROR] Exception in Bedrock invoke_model for request {request_id}")
+            print(
+                f"\n[ERROR] Exception in Bedrock invoke_model for request {request_id}"
+            )
             print(f"[ERROR] Type: {type(e).__name__}")
             print(f"[ERROR] Message: {str(e)}")
             import traceback
+
             print(f"[ERROR] Traceback:\n{traceback.format_exc()}\n")
             raise BedrockAPIError(
                 error_code="InternalError",
                 error_message=f"Failed to invoke Bedrock model: {str(e)}",
                 http_status=500,
-                error_type="api_error"
+                error_type="api_error",
             )
 
     def _invoke_model_native_sync(
-        self, request: MessageRequest, request_id: Optional[str] = None,
+        self,
+        request: MessageRequest,
+        request_id: Optional[str] = None,
         service_tier: Optional[str] = None,
-        anthropic_beta: Optional[str] = None, cache_ttl: Optional[str] = None,
-        provider_id: Optional[str] = None
+        anthropic_beta: Optional[str] = None,
+        cache_ttl: Optional[str] = None,
+        provider_id: Optional[str] = None,
     ) -> MessageResponse:
         """
         Invoke Bedrock InvokeModel API for Claude models (native Anthropic format).
@@ -896,7 +1107,9 @@ class BedrockService:
         bedrock_model_id = self._get_bedrock_model_id(request.model)
 
         # Convert request to native Anthropic format
-        native_request = self._convert_to_anthropic_native_request(request, anthropic_beta)
+        native_request = self._convert_to_anthropic_native_request(
+            request, anthropic_beta
+        )
 
         # Apply cache TTL with priority: API key > client > proxy default
         self._apply_cache_ttl(native_request, api_key_cache_ttl=cache_ttl)
@@ -917,12 +1130,16 @@ class BedrockService:
         print(f"  - Service tier: {effective_service_tier}")
 
         # Debug: Log each message's content types for debugging thinking block ordering
-        for idx, msg in enumerate(native_request.get('messages', [])):
-            role = msg.get('role', '?')
-            content = msg.get('content', [])
+        for idx, msg in enumerate(native_request.get("messages", [])):
+            role = msg.get("role", "?")
+            content = msg.get("content", [])
             if isinstance(content, list):
-                content_types = [b.get('type', '?') if isinstance(b, dict) else '?' for b in content]
-                print(f"  - messages[{idx}]: role={role}, content_types={content_types}")
+                content_types = [
+                    b.get("type", "?") if isinstance(b, dict) else "?" for b in content
+                ]
+                print(
+                    f"  - messages[{idx}]: role={role}, content_types={content_types}"
+                )
             else:
                 print(f"  - messages[{idx}]: role={role}, content=str")
 
@@ -934,7 +1151,7 @@ class BedrockService:
                 modelId=bedrock_model_id,
                 contentType="application/json",
                 accept="application/json",
-                body=json.dumps(native_request)
+                body=json.dumps(native_request),
             )
 
             # Add serviceTier if not 'default'
@@ -973,28 +1190,41 @@ class BedrockService:
 
             # Check if the error is related to serviceTier not being supported
             # If so, retry with default tier
-            if (effective_service_tier and effective_service_tier != "default" and
-                ("serviceTier" in error_message.lower() or
-                 "service tier" in error_message.lower() or
-                 "does not support" in error_message.lower())):
-                print(f"[BEDROCK NATIVE] Service tier '{effective_service_tier}' not supported, retrying with default...")
+            if (
+                effective_service_tier
+                and effective_service_tier != "default"
+                and (
+                    "serviceTier" in error_message.lower()
+                    or "service tier" in error_message.lower()
+                    or "does not support" in error_message.lower()
+                )
+            ):
+                print(
+                    f"[BEDROCK NATIVE] Service tier '{effective_service_tier}' not supported, retrying with default..."
+                )
                 invoke_kwargs.pop("serviceTier", None)
                 try:
-                    response = self.get_client(provider_id).invoke_model(**invoke_kwargs)
+                    response = self.get_client(provider_id).invoke_model(
+                        **invoke_kwargs
+                    )
                     response_body = json.loads(response["body"].read())
                     print(f"[BEDROCK NATIVE] Retry with default tier succeeded")
                     print(f"  - Stop reason: {response_body.get('stop_reason')}")
                     print(f"  - Usage: {response_body.get('usage')}")
 
                     message_id = request_id or f"msg_{uuid4().hex}"
-                    anthropic_response = self._convert_native_response_to_message_response(
-                        response_body, request.model, message_id
+                    anthropic_response = (
+                        self._convert_native_response_to_message_response(
+                            response_body, request.model, message_id
+                        )
                     )
                     return anthropic_response
                 except ClientError as retry_error:
                     retry_code = retry_error.response["Error"]["Code"]
                     retry_message = retry_error.response["Error"]["Message"]
-                    print(f"[ERROR] Retry with default tier also failed: {retry_code}: {retry_message}")
+                    print(
+                        f"[ERROR] Retry with default tier also failed: {retry_code}: {retry_message}"
+                    )
                     raise map_bedrock_error(retry_code, retry_message)
                 except Exception as retry_error:
                     print(f"[ERROR] Retry with default tier also failed: {retry_error}")
@@ -1010,12 +1240,13 @@ class BedrockService:
             print(f"[ERROR] Type: {type(e).__name__}")
             print(f"[ERROR] Message: {str(e)}")
             import traceback
+
             print(f"[ERROR] Traceback:\n{traceback.format_exc()}\n")
             raise BedrockAPIError(
                 error_code="InternalError",
                 error_message=f"Failed to invoke model: {str(e)}",
                 http_status=500,
-                error_type="api_error"
+                error_type="api_error",
             )
 
     def _convert_native_response_to_message_response(
@@ -1033,8 +1264,13 @@ class BedrockService:
             MessageResponse object
         """
         from app.schemas.anthropic import (
-            MessageResponse, Usage, TextContent, ThinkingContent,
-            RedactedThinkingContent, ToolUseContent, CompactionContent
+            MessageResponse,
+            Usage,
+            TextContent,
+            ThinkingContent,
+            RedactedThinkingContent,
+            ToolUseContent,
+            CompactionContent,
         )
 
         # Extract content blocks
@@ -1043,33 +1279,36 @@ class BedrockService:
             block_type = block.get("type")
 
             if block_type == "text":
-                content_blocks.append(TextContent(
-                    type="text",
-                    text=block.get("text", "")
-                ))
+                content_blocks.append(
+                    TextContent(type="text", text=block.get("text", ""))
+                )
             elif block_type == "thinking":
-                content_blocks.append(ThinkingContent(
-                    type="thinking",
-                    thinking=block.get("thinking", ""),
-                    signature=block.get("signature")
-                ))
+                content_blocks.append(
+                    ThinkingContent(
+                        type="thinking",
+                        thinking=block.get("thinking", ""),
+                        signature=block.get("signature"),
+                    )
+                )
             elif block_type == "redacted_thinking":
-                content_blocks.append(RedactedThinkingContent(
-                    type="redacted_thinking",
-                    data=block.get("data", "")
-                ))
+                content_blocks.append(
+                    RedactedThinkingContent(
+                        type="redacted_thinking", data=block.get("data", "")
+                    )
+                )
             elif block_type == "tool_use":
-                content_blocks.append(ToolUseContent(
-                    type="tool_use",
-                    id=block.get("id", ""),
-                    name=block.get("name", ""),
-                    input=block.get("input", {})
-                ))
+                content_blocks.append(
+                    ToolUseContent(
+                        type="tool_use",
+                        id=block.get("id", ""),
+                        name=block.get("name", ""),
+                        input=block.get("input", {}),
+                    )
+                )
             elif block_type == "compaction":
-                content_blocks.append(CompactionContent(
-                    type="compaction",
-                    content=block.get("content")
-                ))
+                content_blocks.append(
+                    CompactionContent(type="compaction", content=block.get("content"))
+                )
 
         # Extract usage
         usage_data = response_body.get("usage", {})
@@ -1078,7 +1317,7 @@ class BedrockService:
             output_tokens=usage_data.get("output_tokens", 0),
             cache_creation_input_tokens=usage_data.get("cache_creation_input_tokens"),
             cache_read_input_tokens=usage_data.get("cache_read_input_tokens"),
-            iterations=usage_data.get("iterations")
+            iterations=usage_data.get("iterations"),
         )
 
         return MessageResponse(
@@ -1090,13 +1329,17 @@ class BedrockService:
             stop_reason=response_body.get("stop_reason"),
             stop_sequence=response_body.get("stop_sequence"),
             stop_details=response_body.get("stop_details"),
-            usage=usage
+            usage=usage,
         )
 
     async def invoke_model_stream(
-        self, request: MessageRequest, request_id: Optional[str] = None,
-        service_tier: Optional[str] = None, anthropic_beta: Optional[str] = None,
-        cache_ttl: Optional[str] = None, provider_id: Optional[str] = None
+        self,
+        request: MessageRequest,
+        request_id: Optional[str] = None,
+        service_tier: Optional[str] = None,
+        anthropic_beta: Optional[str] = None,
+        cache_ttl: Optional[str] = None,
+        provider_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Invoke Bedrock model with streaming (Server-Sent Events format).
@@ -1117,12 +1360,37 @@ class BedrockService:
         Yields:
             SSE-formatted event strings
         """
+        # Global backend short-circuit (BACKEND_MODE != bedrock). ALL models
+        # — including claude-* — route to the selected backend, bypassing the
+        # _is_claude_model branch and the Bedrock semaphore below.
+        if self._anthropic_backend_service is not None:  # mode == "anthropic"
+            message_id = request_id or f"msg_{uuid4().hex}"
+            async for event in self._anthropic_backend_service.invoke_model_stream(
+                request, message_id
+            ):
+                yield event
+            return
+        if self._backend_mode == "openai" and self._openai_compat_service:
+            message_id = request_id or f"msg_{uuid4().hex}"
+            print(
+                f"[BEDROCK STREAM] Using OpenAI Chat Completions API (streaming) for: {request.model}"
+            )
+            async for event in self._openai_compat_service.invoke_model_stream(
+                request, message_id
+            ):
+                yield event
+            return
+
         # Route non-Claude models to OpenAI-compat streaming BEFORE acquiring semaphore
         # (OpenAI-compat service manages its own semaphore)
         if not self._is_claude_model(request.model) and self._openai_compat_service:
             message_id = request_id or f"msg_{uuid4().hex}"
-            print(f"[BEDROCK STREAM] Using OpenAI Chat Completions API (streaming) for: {request.model}")
-            async for event in self._openai_compat_service.invoke_model_stream(request, message_id):
+            print(
+                f"[BEDROCK STREAM] Using OpenAI Chat Completions API (streaming) for: {request.model}"
+            )
+            async for event in self._openai_compat_service.invoke_model_stream(
+                request, message_id
+            ):
                 yield event
             return
 
@@ -1141,6 +1409,7 @@ class BedrockService:
             _otel_ctx = None
             if settings.enable_tracing:
                 from app.tracing.context import propagate_context_to_thread
+
                 _otel_ctx = propagate_context_to_thread()
 
             # Determine service tier to use (shared by both native and Converse paths)
@@ -1148,13 +1417,17 @@ class BedrockService:
 
             # Route Claude models to InvokeModelWithResponseStream for better feature support
             if self._is_claude_model(request.model):
-                print(f"[BEDROCK STREAM] Using InvokeModelWithResponseStream for Claude model: {request.model}")
+                print(
+                    f"[BEDROCK STREAM] Using InvokeModelWithResponseStream for Claude model: {request.model}"
+                )
 
                 # Get Bedrock model ID
                 bedrock_model_id = self._get_bedrock_model_id(request.model)
 
                 # Convert request to native Anthropic format
-                native_request = self._convert_to_anthropic_native_request(request, anthropic_beta)
+                native_request = self._convert_to_anthropic_native_request(
+                    request, anthropic_beta
+                )
 
                 # Apply cache TTL with priority: API key > client > proxy default
                 self._apply_cache_ttl(native_request, api_key_cache_ttl=cache_ttl)
@@ -1181,13 +1454,17 @@ class BedrockService:
                     effective_service_tier,
                     event_queue,
                     _otel_ctx,
-                    provider_id
+                    provider_id,
                 )
             else:
-                print(f"[BEDROCK STREAM] Converting request to Bedrock format for request {request_id}")
+                print(
+                    f"[BEDROCK STREAM] Converting request to Bedrock format for request {request_id}"
+                )
 
                 # Convert request to Bedrock format (with beta header mapping)
-                bedrock_request = self.anthropic_to_bedrock.convert_request(request, anthropic_beta)
+                bedrock_request = self.anthropic_to_bedrock.convert_request(
+                    request, anthropic_beta
+                )
 
                 print(f"[BEDROCK STREAM] Bedrock request params:")
                 print(f"  - Model ID: {bedrock_request.get('modelId')}")
@@ -1208,7 +1485,7 @@ class BedrockService:
                     effective_service_tier,
                     event_queue,
                     _otel_ctx,
-                    provider_id
+                    provider_id,
                 )
 
             # Consume events from queue asynchronously
@@ -1222,12 +1499,16 @@ class BedrockService:
                         msg_type, data = event_queue.get_nowait()
 
                         if msg_type == "done":
-                            print(f"[BEDROCK STREAM] Stream completed for request {request_id}")
+                            print(
+                                f"[BEDROCK STREAM] Stream completed for request {request_id}"
+                            )
                             break
                         elif msg_type == "error":
                             # data is (error_code, error_message)
                             error_code, error_message = data
-                            print(f"[BEDROCK STREAM] Error in stream: {error_code}: {error_message}")
+                            print(
+                                f"[BEDROCK STREAM] Error in stream: {error_code}: {error_message}"
+                            )
                             error_event = self.bedrock_to_anthropic.create_error_event(
                                 error_code, error_message
                             )
@@ -1272,8 +1553,10 @@ class BedrockService:
                                 future.result()  # This will raise if thread had an exception
                             except Exception as e:
                                 print(f"[BEDROCK STREAM] Thread exception: {e}")
-                                error_event = self.bedrock_to_anthropic.create_error_event(
-                                    "internal_error", str(e)
+                                error_event = (
+                                    self.bedrock_to_anthropic.create_error_event(
+                                        "internal_error", str(e)
+                                    )
                                 )
                                 yield self._format_sse_event(error_event)
                             break
@@ -1281,6 +1564,7 @@ class BedrockService:
             except Exception as e:
                 print(f"[BEDROCK STREAM] Exception in async consumer: {e}")
                 import traceback
+
                 print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
                 error_event = self.bedrock_to_anthropic.create_error_event(
                     "internal_error", str(e)
@@ -1295,7 +1579,7 @@ class BedrockService:
         effective_service_tier: str,
         event_queue: queue.Queue,
         otel_ctx=None,
-        provider_id: Optional[str] = None
+        provider_id: Optional[str] = None,
     ) -> None:
         """
         Worker function that runs in thread pool to handle streaming.
@@ -1315,6 +1599,7 @@ class BedrockService:
         _otel_token = None
         if otel_ctx is not None:
             from app.tracing.context import attach_context_in_thread
+
             _otel_token = attach_context_in_thread(otel_ctx)
 
         current_index = 0
@@ -1335,7 +1620,9 @@ class BedrockService:
             stream = response.get("stream")
             if not stream:
                 print(f"[ERROR] No stream returned from Bedrock")
-                event_queue.put(("error", ("no_stream", "No stream returned from Bedrock")))
+                event_queue.put(
+                    ("error", ("no_stream", "No stream returned from Bedrock"))
+                )
                 return
 
             print(f"[BEDROCK STREAM WORKER] Processing stream events...")
@@ -1343,7 +1630,12 @@ class BedrockService:
             for bedrock_event in stream:
                 # Process the event and generate SSE strings
                 sse_events = self._process_stream_event(
-                    bedrock_event, request, message_id, current_index, seen_indices, accumulated_usage
+                    bedrock_event,
+                    request,
+                    message_id,
+                    current_index,
+                    seen_indices,
+                    accumulated_usage,
                 )
 
                 # Update current_index if needed
@@ -1365,24 +1657,38 @@ class BedrockService:
             error_code = e.response["Error"]["Code"]
             error_message = e.response["Error"]["Message"]
 
-            print(f"[ERROR] Bedrock ClientError in streaming: {error_code}: {error_message}")
+            print(
+                f"[ERROR] Bedrock ClientError in streaming: {error_code}: {error_message}"
+            )
 
             # Check if service tier retry is needed
-            if (effective_service_tier and effective_service_tier != "default" and
-                ("serviceTier" in error_message.lower() or
-                 "service tier" in error_message.lower() or
-                 "does not support" in error_message.lower())):
+            if (
+                effective_service_tier
+                and effective_service_tier != "default"
+                and (
+                    "serviceTier" in error_message.lower()
+                    or "service tier" in error_message.lower()
+                    or "does not support" in error_message.lower()
+                )
+            ):
 
                 print(f"[BEDROCK STREAM WORKER] Retrying with default tier...")
                 bedrock_request.pop("serviceTier", None)
 
                 try:
-                    response = self.get_client(provider_id).converse_stream(**bedrock_request)
+                    response = self.get_client(provider_id).converse_stream(
+                        **bedrock_request
+                    )
                     stream = response.get("stream")
                     if stream:
                         for bedrock_event in stream:
                             sse_events = self._process_stream_event(
-                                bedrock_event, request, message_id, current_index, seen_indices, accumulated_usage
+                                bedrock_event,
+                                request,
+                                message_id,
+                                current_index,
+                                seen_indices,
+                                accumulated_usage,
                             )
                             if "contentBlockStart" in bedrock_event:
                                 current_index = bedrock_event["contentBlockStart"].get(
@@ -1403,11 +1709,13 @@ class BedrockService:
         except Exception as e:
             print(f"[ERROR] Exception in stream worker: {type(e).__name__}: {e}")
             import traceback
+
             print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
             event_queue.put(("error", ("internal_error", str(e))))
         finally:
             if _otel_token is not None:
                 from app.tracing.context import detach_context_in_thread
+
                 detach_context_in_thread(_otel_token)
 
     def _stream_worker_native(
@@ -1419,7 +1727,7 @@ class BedrockService:
         effective_service_tier: str,
         event_queue: queue.Queue,
         otel_ctx=None,
-        provider_id: Optional[str] = None
+        provider_id: Optional[str] = None,
     ) -> None:
         """
         Worker function for InvokeModelWithResponseStream (native Anthropic format).
@@ -1440,17 +1748,20 @@ class BedrockService:
         _otel_token = None
         if otel_ctx is not None:
             from app.tracing.context import attach_context_in_thread
+
             _otel_token = attach_context_in_thread(otel_ctx)
 
         try:
-            print(f"[BEDROCK STREAM NATIVE] Calling InvokeModelWithResponseStream API...")
+            print(
+                f"[BEDROCK STREAM NATIVE] Calling InvokeModelWithResponseStream API..."
+            )
 
             # Build InvokeModelWithResponseStream kwargs
             invoke_kwargs = dict(
                 modelId=bedrock_model_id,
                 contentType="application/json",
                 accept="application/json",
-                body=json.dumps(native_request)
+                body=json.dumps(native_request),
             )
 
             # Add serviceTier if not 'default'
@@ -1459,15 +1770,21 @@ class BedrockService:
                 invoke_kwargs["serviceTier"] = effective_service_tier
 
             # Call InvokeModelWithResponseStream API
-            response = self.get_client(provider_id).invoke_model_with_response_stream(**invoke_kwargs)
+            response = self.get_client(provider_id).invoke_model_with_response_stream(
+                **invoke_kwargs
+            )
 
             # Log service tier from response metadata
-            print(f"[BEDROCK STREAM NATIVE] Service tier used: {response.get('serviceTier', 'default')}")
+            print(
+                f"[BEDROCK STREAM NATIVE] Service tier used: {response.get('serviceTier', 'default')}"
+            )
 
             stream = response.get("body")
             if not stream:
                 print(f"[ERROR] No stream body returned from Bedrock")
-                event_queue.put(("error", ("no_stream", "No stream body returned from Bedrock")))
+                event_queue.put(
+                    ("error", ("no_stream", "No stream body returned from Bedrock"))
+                )
                 return
 
             print(f"[BEDROCK STREAM NATIVE] Processing native stream events...")
@@ -1484,7 +1801,9 @@ class BedrockService:
                         event_type = event_data.get("type", "unknown")
 
                         # Format as SSE and put in queue
-                        sse_event = f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
+                        sse_event = (
+                            f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
+                        )
                         event_queue.put(("event", sse_event))
 
                         # Log message_start and usage info for debugging
@@ -1494,13 +1813,19 @@ class BedrockService:
                             print(f"[BEDROCK STREAM NATIVE] message_start received")
                             print(f"  - input_tokens: {usage.get('input_tokens', 0)}")
                             if usage.get("cache_read_input_tokens"):
-                                print(f"  - cache_read_input_tokens: {usage.get('cache_read_input_tokens')}")
+                                print(
+                                    f"  - cache_read_input_tokens: {usage.get('cache_read_input_tokens')}"
+                                )
                             if usage.get("cache_creation_input_tokens"):
-                                print(f"  - cache_creation_input_tokens: {usage.get('cache_creation_input_tokens')}")
+                                print(
+                                    f"  - cache_creation_input_tokens: {usage.get('cache_creation_input_tokens')}"
+                                )
                         elif event_type == "message_delta":
                             delta = event_data.get("delta", {})
                             usage = event_data.get("usage", {})
-                            print(f"[BEDROCK STREAM NATIVE] message_delta: stop_reason={delta.get('stop_reason')}")
+                            print(
+                                f"[BEDROCK STREAM NATIVE] message_delta: stop_reason={delta.get('stop_reason')}"
+                            )
                             print(f"  - output_tokens: {usage.get('output_tokens', 0)}")
 
             print(f"[BEDROCK STREAM NATIVE] Stream completed")
@@ -1509,19 +1834,28 @@ class BedrockService:
         except ClientError as e:
             error_code = e.response["Error"]["Code"]
             error_message = e.response["Error"]["Message"]
-            print(f"[ERROR] InvokeModelWithResponseStream ClientError: {error_code}: {error_message}")
+            print(
+                f"[ERROR] InvokeModelWithResponseStream ClientError: {error_code}: {error_message}"
+            )
 
             # Check if service tier retry is needed
-            if (effective_service_tier and effective_service_tier != "default" and
-                ("serviceTier" in error_message.lower() or
-                 "service tier" in error_message.lower() or
-                 "does not support" in error_message.lower())):
+            if (
+                effective_service_tier
+                and effective_service_tier != "default"
+                and (
+                    "serviceTier" in error_message.lower()
+                    or "service tier" in error_message.lower()
+                    or "does not support" in error_message.lower()
+                )
+            ):
 
                 print(f"[BEDROCK STREAM NATIVE] Retrying with default tier...")
                 invoke_kwargs.pop("serviceTier", None)
 
                 try:
-                    response = self.get_client(provider_id).invoke_model_with_response_stream(**invoke_kwargs)
+                    response = self.get_client(
+                        provider_id
+                    ).invoke_model_with_response_stream(**invoke_kwargs)
                     stream = response.get("body")
                     if stream:
                         for event in stream:
@@ -1545,11 +1879,13 @@ class BedrockService:
         except Exception as e:
             print(f"[ERROR] Exception in native stream worker: {type(e).__name__}: {e}")
             import traceback
+
             print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
             event_queue.put(("error", ("internal_error", str(e))))
         finally:
             if _otel_token is not None:
                 from app.tracing.context import detach_context_in_thread
+
                 detach_context_in_thread(_otel_token)
 
     def _process_stream_event(
@@ -1559,7 +1895,7 @@ class BedrockService:
         message_id: str,
         current_index: int,
         seen_indices: set,
-        accumulated_usage: Dict[str, int]
+        accumulated_usage: Dict[str, int],
     ) -> list[str]:
         """
         Process a single Bedrock stream event and return SSE-formatted strings.
@@ -1588,14 +1924,18 @@ class BedrockService:
 
                 # Inject content_block_start event
                 if "reasoningContent" in delta:
-                    print(f"[BEDROCK STREAM WORKER] Injecting content_block_start for thinking block [{index}]")
+                    print(
+                        f"[BEDROCK STREAM WORKER] Injecting content_block_start for thinking block [{index}]"
+                    )
                     start_event = {
                         "type": "content_block_start",
                         "index": index,
                         "content_block": {"type": "thinking", "thinking": ""},
                     }
                 else:
-                    print(f"[BEDROCK STREAM WORKER] Injecting content_block_start for text block [{index}]")
+                    print(
+                        f"[BEDROCK STREAM WORKER] Injecting content_block_start for text block [{index}]"
+                    )
                     start_event = {
                         "type": "content_block_start",
                         "index": index,
@@ -1615,8 +1955,12 @@ class BedrockService:
             accumulated_usage["inputTokens"] = usage.get("inputTokens", 0)
             accumulated_usage["outputTokens"] = usage.get("outputTokens", 0)
             # Extract cache tokens if present (Bedrock may include these in metadata)
-            accumulated_usage["cacheReadInputTokens"] = usage.get("cacheReadInputTokens", 0)
-            accumulated_usage["cacheCreationInputTokens"] = usage.get("cacheCreationInputTokens", 0)
+            accumulated_usage["cacheReadInputTokens"] = usage.get(
+                "cacheReadInputTokens", 0
+            )
+            accumulated_usage["cacheCreationInputTokens"] = usage.get(
+                "cacheCreationInputTokens", 0
+            )
 
             anthropic_events = self.bedrock_to_anthropic.merge_usage_into_events(
                 anthropic_events, usage
@@ -1694,6 +2038,21 @@ class BedrockService:
         Returns:
             Model information or None if not found
         """
+        # Non-Bedrock backends: synthesize from the configured model mapping
+        # instead of calling boto3 (which would fail without AWS credentials).
+        if self._backend_mode != "bedrock":
+            merged: Dict[str, str] = dict(settings.default_model_mapping)
+            target = merged.get(model_id, model_id)
+            return {
+                "id": model_id,
+                "name": model_id,
+                "provider": _derive_provider(target),
+                "input_modalities": ["text", "image"],
+                "output_modalities": ["text"],
+                "streaming_supported": True,
+                "customizations_supported": [],
+            }
+
         try:
             bedrock_client = boto3.client(
                 "bedrock",
@@ -1728,7 +2087,9 @@ class BedrockService:
         except Exception as e:
             raise Exception(f"Failed to get model info: {str(e)}")
 
-    async def count_tokens(self, request: CountTokensRequest, provider_id: Optional[str] = None) -> int:
+    async def count_tokens(
+        self, request: CountTokensRequest, provider_id: Optional[str] = None
+    ) -> int:
         """
         Count tokens in a request asynchronously.
 
@@ -1746,12 +2107,17 @@ class BedrockService:
             For Claude models on Bedrock, this returns actual token counts.
             For other models, this returns an estimation.
         """
+        # Global backend short-circuit (BACKEND_MODE != bedrock).
+        if self._backend_mode == "openai":
+            # OpenAI has no generic count-tokens endpoint; fall back to the
+            # existing heuristic (silent degradation).
+            return self._estimate_token_count(request)
+        if self._anthropic_backend_service is not None:  # mode == "anthropic"
+            return await self._anthropic_backend_service.count_tokens(request)
+
         # Check if this is an Anthropic/Claude model
         model_id = request.model.lower()
-        is_claude_model = (
-            "anthropic" in model_id or
-            "claude" in model_id
-        )
+        is_claude_model = "anthropic" in model_id or "claude" in model_id
 
         # Only try Bedrock API for Claude models
         if is_claude_model:
@@ -1760,10 +2126,7 @@ class BedrockService:
                 loop = asyncio.get_event_loop()
                 executor = _get_executor()
                 return await loop.run_in_executor(
-                    executor,
-                    self._count_tokens_sync,
-                    request,
-                    provider_id
+                    executor, self._count_tokens_sync, request, provider_id
                 )
             except Exception as e:
                 # If Bedrock API fails, fall back to estimation
@@ -1772,7 +2135,9 @@ class BedrockService:
         # Fallback: Estimate token count for non-Claude models or if API fails
         return self._estimate_token_count(request)
 
-    def _count_tokens_sync(self, request: CountTokensRequest, provider_id: Optional[str] = None) -> int:
+    def _count_tokens_sync(
+        self, request: CountTokensRequest, provider_id: Optional[str] = None
+    ) -> int:
         """
         Synchronous count tokens implementation (runs in thread pool).
 
@@ -1795,11 +2160,7 @@ class BedrockService:
         bedrock_request = self.anthropic_to_bedrock.convert_request(message_request)
 
         # Build count_tokens API request
-        count_tokens_input = {
-            "converse": {
-                "messages": bedrock_request["messages"]
-            }
-        }
+        count_tokens_input = {"converse": {"messages": bedrock_request["messages"]}}
 
         # Add system messages if present
         if "system" in bedrock_request and bedrock_request["system"]:
@@ -1811,8 +2172,7 @@ class BedrockService:
 
         # Call count_tokens API
         response = self.get_client(provider_id).count_tokens(
-            modelId=bedrock_request["modelId"],
-            input=count_tokens_input
+            modelId=bedrock_request["modelId"], input=count_tokens_input
         )
 
         # Extract token count
@@ -1918,17 +2278,17 @@ class BedrockService:
         """
         # Unicode ranges for CJK characters
         cjk_ranges = [
-            (0x4E00, 0x9FFF),    # CJK Unified Ideographs
-            (0x3400, 0x4DBF),    # CJK Unified Ideographs Extension A
+            (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+            (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
             (0x20000, 0x2A6DF),  # CJK Unified Ideographs Extension B
             (0x2A700, 0x2B73F),  # CJK Unified Ideographs Extension C
             (0x2B740, 0x2B81F),  # CJK Unified Ideographs Extension D
             (0x2B820, 0x2CEAF),  # CJK Unified Ideographs Extension E
-            (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
+            (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
             (0x2F800, 0x2FA1F),  # CJK Compatibility Ideographs Supplement
-            (0x3040, 0x309F),    # Hiragana
-            (0x30A0, 0x30FF),    # Katakana
-            (0xAC00, 0xD7AF),    # Hangul Syllables
+            (0x3040, 0x309F),  # Hiragana
+            (0x30A0, 0x30FF),  # Katakana
+            (0xAC00, 0xD7AF),  # Hangul Syllables
         ]
 
         code_point = ord(char)

@@ -3,10 +3,11 @@ Application configuration management using Pydantic Settings.
 
 Loads configuration from environment variables with validation and type safety.
 """
-from functools import lru_cache
-from typing import Any, Dict, List, Optional, Union
 
-from pydantic import AliasChoices, Field, field_validator
+from functools import lru_cache
+from typing import Any, Dict, List, Literal, Optional, Union
+
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -97,7 +98,7 @@ class Settings(BaseSettings):
             "TTL in days for usage records in DynamoDB (0 to disable TTL). "
             "Caps how far back the daily-usage dashboard can show; keep >= the "
             "max dashboard window (30)."
-        )
+        ),
     )
     response_context_ttl_seconds: int = Field(
         default=3600,
@@ -134,18 +135,21 @@ class Settings(BaseSettings):
         default=60, alias="RATE_LIMIT_WINDOW"
     )  # window in seconds
     master_key_rate_limit: int = Field(
-        default=10000, alias="MASTER_KEY_RATE_LIMIT",
-        description="Rate limit (requests/window) for master API key. 0 = unlimited."
+        default=10000,
+        alias="MASTER_KEY_RATE_LIMIT",
+        description="Rate limit (requests/window) for master API key. 0 = unlimited.",
     )
 
     # Security Settings
     admin_dev_mode: bool = Field(
-        default=False, alias="ADMIN_DEV_MODE",
-        description="When True, admin portal allows unauthenticated access. NEVER enable in production."
+        default=False,
+        alias="ADMIN_DEV_MODE",
+        description="When True, admin portal allows unauthenticated access. NEVER enable in production.",
     )
     require_iam_roles: bool = Field(
-        default=False, alias="REQUIRE_IAM_ROLES",
-        description="When True, reject explicit AWS credentials and require IAM task roles."
+        default=False,
+        alias="REQUIRE_IAM_ROLES",
+        description="When True, reject explicit AWS credentials and require IAM task roles.",
     )
 
     # Bedrock Prompt Caching
@@ -159,9 +163,7 @@ class Settings(BaseSettings):
     )  # "5m" or "1h", None = don't inject TTL (use Anthropic default)
 
     # Strip unsupported 'scope' field from cache_control (Bedrock doesn't support it)
-    strip_cache_scope: bool = Field(
-        default=True, alias="STRIP_CACHE_SCOPE"
-    )
+    strip_cache_scope: bool = Field(default=True, alias="STRIP_CACHE_SCOPE")
 
     # Model Mapping
     default_model_mapping: Dict[str, str] = Field(
@@ -212,17 +214,33 @@ class Settings(BaseSettings):
     sentry_dsn: Optional[str] = Field(default=None, alias="SENTRY_DSN")
 
     # OpenTelemetry Tracing (active when enable_tracing=True)
-    otel_exporter_endpoint: Optional[str] = Field(default=None, alias="OTEL_EXPORTER_OTLP_ENDPOINT")
-    otel_exporter_protocol: str = Field(default="http/protobuf", alias="OTEL_EXPORTER_OTLP_PROTOCOL")
-    otel_exporter_headers: Optional[str] = Field(default=None, alias="OTEL_EXPORTER_OTLP_HEADERS")
-    otel_service_name: str = Field(default="anthropic-bedrock-proxy", alias="OTEL_SERVICE_NAME")
+    otel_exporter_endpoint: Optional[str] = Field(
+        default=None, alias="OTEL_EXPORTER_OTLP_ENDPOINT"
+    )
+    otel_exporter_protocol: str = Field(
+        default="http/protobuf", alias="OTEL_EXPORTER_OTLP_PROTOCOL"
+    )
+    otel_exporter_headers: Optional[str] = Field(
+        default=None, alias="OTEL_EXPORTER_OTLP_HEADERS"
+    )
+    otel_service_name: str = Field(
+        default="anthropic-bedrock-proxy", alias="OTEL_SERVICE_NAME"
+    )
     otel_trace_content: bool = Field(default=False, alias="OTEL_TRACE_CONTENT")
-    otel_trace_sampling_ratio: float = Field(default=1.0, alias="OTEL_TRACE_SAMPLING_RATIO")
-    otel_batch_max_queue_size: int = Field(default=2048, alias="OTEL_BATCH_MAX_QUEUE_SIZE")
-    otel_batch_schedule_delay_ms: int = Field(default=5000, alias="OTEL_BATCH_SCHEDULE_DELAY_MS")
+    otel_trace_sampling_ratio: float = Field(
+        default=1.0, alias="OTEL_TRACE_SAMPLING_RATIO"
+    )
+    otel_batch_max_queue_size: int = Field(
+        default=2048, alias="OTEL_BATCH_MAX_QUEUE_SIZE"
+    )
+    otel_batch_schedule_delay_ms: int = Field(
+        default=5000, alias="OTEL_BATCH_SCHEDULE_DELAY_MS"
+    )
 
     # Request Timeouts
-    bedrock_timeout: int = Field(default=1800, alias="BEDROCK_TIMEOUT")  # seconds (10 minutes)
+    bedrock_timeout: int = Field(
+        default=1800, alias="BEDROCK_TIMEOUT"
+    )  # seconds (10 minutes)
     dynamodb_timeout: int = Field(default=10, alias="DYNAMODB_TIMEOUT")  # seconds
 
     # Bedrock Concurrency Settings
@@ -238,9 +256,7 @@ class Settings(BaseSettings):
     enable_extended_thinking: bool = Field(
         default=True, alias="ENABLE_EXTENDED_THINKING"
     )
-    enable_document_support: bool = Field(
-        default=True, alias="ENABLE_DOCUMENT_SUPPORT"
-    )
+    enable_document_support: bool = Field(default=True, alias="ENABLE_DOCUMENT_SUPPORT")
 
     # Beta Header Mapping (Anthropic beta headers → Bedrock beta headers)
     # Maps Anthropic beta header values to corresponding Bedrock beta features
@@ -287,7 +303,7 @@ class Settings(BaseSettings):
         default=3600,
         alias="INFERENCE_PROFILE_CACHE_TTL_SECONDS",
         description="TTL (seconds) for the in-memory cache mapping application "
-                    "inference profile ARNs to their underlying foundation model ID.",
+        "inference profile ARNs to their underlying foundation model ID.",
     )
 
     # Beta features that require InvokeModel API instead of Converse API
@@ -310,42 +326,42 @@ class Settings(BaseSettings):
     enable_programmatic_tool_calling: bool = Field(
         default=True,
         alias="ENABLE_PROGRAMMATIC_TOOL_CALLING",
-        description="Enable Programmatic Tool Calling feature (requires Docker)"
+        description="Enable Programmatic Tool Calling feature (requires Docker)",
     )
     ptc_sandbox_image: str = Field(
         default="python:3.11-slim",
         alias="PTC_SANDBOX_IMAGE",
-        description="Docker image for PTC sandbox execution"
+        description="Docker image for PTC sandbox execution",
     )
     ptc_session_timeout: int = Field(
         default=270,  # 4.5 minutes (matches Anthropic's timeout)
         alias="PTC_SESSION_TIMEOUT",
-        description="PTC session timeout in seconds"
+        description="PTC session timeout in seconds",
     )
     ptc_execution_timeout: int = Field(
         default=60,
         alias="PTC_EXECUTION_TIMEOUT",
-        description="PTC code execution timeout in seconds"
+        description="PTC code execution timeout in seconds",
     )
     ptc_memory_limit: str = Field(
         default="256m",
         alias="PTC_MEMORY_LIMIT",
-        description="Docker container memory limit"
+        description="Docker container memory limit",
     )
     ptc_network_disabled: bool = Field(
         default=True,
         alias="PTC_NETWORK_DISABLED",
-        description="Disable network access in PTC sandbox"
+        description="Disable network access in PTC sandbox",
     )
     ptc_pids_limit: int = Field(
         default=64,
         alias="PTC_PIDS_LIMIT",
-        description="Max processes in PTC sandbox container (fork bomb protection)"
+        description="Max processes in PTC sandbox container (fork bomb protection)",
     )
     ptc_read_only_fs: bool = Field(
         default=True,
         alias="PTC_READ_ONLY_FS",
-        description="Mount sandbox container filesystem as read-only with tmpfs for writable paths"
+        description="Mount sandbox container filesystem as read-only with tmpfs for writable paths",
     )
 
     # Standalone Code Execution Settings (code-execution-2025-08-25 beta)
@@ -353,93 +369,93 @@ class Settings(BaseSettings):
     enable_standalone_code_execution: bool = Field(
         default=True,
         alias="ENABLE_STANDALONE_CODE_EXECUTION",
-        description="Enable standalone code execution feature (requires Docker)"
+        description="Enable standalone code execution feature (requires Docker)",
     )
     standalone_max_iterations: int = Field(
         default=25,
         alias="STANDALONE_MAX_ITERATIONS",
-        description="Maximum agentic loop iterations for standalone code execution"
+        description="Maximum agentic loop iterations for standalone code execution",
     )
     standalone_bash_timeout: int = Field(
         default=30,
         alias="STANDALONE_BASH_TIMEOUT",
-        description="Timeout in seconds for individual bash command execution"
+        description="Timeout in seconds for individual bash command execution",
     )
     standalone_max_file_size: int = Field(
         default=10 * 1024 * 1024,  # 10MB
         alias="STANDALONE_MAX_FILE_SIZE",
-        description="Maximum file size in bytes for text editor operations"
+        description="Maximum file size in bytes for text editor operations",
     )
     standalone_workspace_dir: str = Field(
         default="/workspace",
         alias="STANDALONE_WORKSPACE_DIR",
-        description="Working directory inside the sandbox container"
+        description="Working directory inside the sandbox container",
     )
 
     # Web Search Settings
     enable_web_search: bool = Field(
         default=True,
         alias="ENABLE_WEB_SEARCH",
-        description="Enable web search tool support (proxy-side server tool)"
+        description="Enable web search tool support (proxy-side server tool)",
     )
     web_search_provider: str = Field(
         default="tavily",
         alias="WEB_SEARCH_PROVIDER",
-        description="Search provider: 'tavily', 'brave', or 'agentcore'"
+        description="Search provider: 'tavily', 'brave', or 'agentcore'",
     )
     web_search_api_key: Optional[str] = Field(
         default=None,
         alias="WEB_SEARCH_API_KEY",
-        description="API key for the search provider (Tavily or Brave)"
+        description="API key for the search provider (Tavily or Brave)",
     )
     web_search_max_results: int = Field(
         default=5,
         alias="WEB_SEARCH_MAX_RESULTS",
-        description="Maximum number of search results per query"
+        description="Maximum number of search results per query",
     )
     web_search_default_max_uses: int = Field(
         default=10,
         alias="WEB_SEARCH_DEFAULT_MAX_USES",
-        description="Default maximum number of web searches per request"
+        description="Default maximum number of web searches per request",
     )
     agentcore_gateway_url: Optional[str] = Field(
         default=None,
         alias="AGENTCORE_GATEWAY_URL",
-        description="AgentCore Gateway MCP URL for WEB_SEARCH_PROVIDER=agentcore"
+        description="AgentCore Gateway MCP URL for WEB_SEARCH_PROVIDER=agentcore",
     )
     agentcore_gateway_region: str = Field(
         default="us-east-1",
         alias="AGENTCORE_GATEWAY_REGION",
-        description="AWS region for AgentCore Gateway web search"
+        description="AWS region for AgentCore Gateway web search",
     )
 
     # Web Fetch Settings
     enable_web_fetch: bool = Field(
         default=True,
         alias="ENABLE_WEB_FETCH",
-        description="Enable web fetch tool support (proxy-side server tool)"
+        description="Enable web fetch tool support (proxy-side server tool)",
     )
     web_fetch_default_max_uses: int = Field(
         default=20,
         alias="WEB_FETCH_DEFAULT_MAX_USES",
-        description="Default maximum number of web fetches per request"
+        description="Default maximum number of web fetches per request",
     )
     web_fetch_default_max_content_tokens: int = Field(
         default=100000,
         alias="WEB_FETCH_DEFAULT_MAX_CONTENT_TOKENS",
-        description="Default maximum content tokens per fetch"
+        description="Default maximum content tokens per fetch",
     )
 
     # Image URL fetching (for ImageContent with source.type="url")
     image_url_fetch_timeout_s: float = Field(
         default=30.0,
         alias="IMAGE_URL_FETCH_TIMEOUT_S",
-        description="Timeout in seconds when fetching image URL sources"
+        description="Timeout in seconds when fetching image URL sources",
     )
     image_url_fetch_max_bytes: int = Field(
         default=20 * 1024 * 1024,
         alias="IMAGE_URL_FETCH_MAX_BYTES",
-        description="Maximum bytes to download per image URL (Bedrock applies its own stricter limits downstream)"
+        description="Maximum bytes to download per image URL (Bedrock applies its own stricter limits downstream)",
     )
 
     # === OpenAI-Compatible API Settings (Bedrock Mantle) ===
@@ -448,7 +464,7 @@ class Settings(BaseSettings):
     enable_openai_compat: bool = Field(
         default=False,
         alias="ENABLE_OPENAI_COMPAT",
-        description="Use OpenAI Chat Completions API for non-Claude models (via bedrock-mantle)"
+        description="Use OpenAI Chat Completions API for non-Claude models (via bedrock-mantle)",
     )
     openai_api_key: str = Field(
         default="",
@@ -456,7 +472,7 @@ class Settings(BaseSettings):
         description=(
             "Bedrock API key for Bedrock Mantle endpoint. "
             "OPENAI_API_KEY is accepted as a deprecated fallback."
-        )
+        ),
     )
     openai_base_url: str = Field(
         default="",
@@ -465,80 +481,118 @@ class Settings(BaseSettings):
             "Bedrock Mantle endpoint URL "
             "(e.g. https://bedrock-mantle.us-east-1.api.aws/v1). "
             "OPENAI_BASE_URL is accepted as a deprecated fallback."
-        )
+        ),
     )
     openai_compat_thinking_high_threshold: int = Field(
         default=10000,
         alias="OPENAI_COMPAT_THINKING_HIGH_THRESHOLD",
-        description="budget_tokens >= this → reasoning effort 'high'"
+        description="budget_tokens >= this → reasoning effort 'high'",
     )
     openai_compat_thinking_medium_threshold: int = Field(
         default=4000,
         alias="OPENAI_COMPAT_THINKING_MEDIUM_THRESHOLD",
-        description="budget_tokens >= this → reasoning effort 'medium', below → 'low'"
+        description="budget_tokens >= this → reasoning effort 'medium', below → 'low'",
     )
     enable_openai_passthrough: bool = Field(
         default=False,
         alias="ENABLE_OPENAI_PASSTHROUGH",
-        description="Mount /openai/v1/* endpoints (Chat Completions + Responses passthrough to bedrock-mantle)"
+        description="Mount /openai/v1/* endpoints (Chat Completions + Responses passthrough to bedrock-mantle)",
+    )
+
+    # === Global Backend Mode ===
+    # Selects the LLM backend for the entire proxy. When not 'bedrock', ALL
+    # models (including claude-*) route to the selected backend via short-circuits
+    # at the top of BedrockService.invoke_model[_stream]/count_tokens, bypassing
+    # the boto3 bedrock-runtime path entirely.
+    backend_mode: Literal["bedrock", "openai", "anthropic"] = Field(
+        default="bedrock",
+        alias="BACKEND_MODE",
+        description=(
+            "Global LLM backend. 'bedrock' = AWS Bedrock (default, unchanged). "
+            "'openai' = route ALL models through OpenAICompatService (reuses "
+            "OPENAI_BASE_URL/OPENAI_API_KEY). 'anthropic' = route ALL models "
+            "through the direct Anthropic API (requires ANTHROPIC_API_KEY)."
+        ),
+    )
+    anthropic_api_key: str = Field(
+        default="",
+        alias="ANTHROPIC_API_KEY",
+        description="Anthropic API key for BACKEND_MODE=anthropic. Required when mode=anthropic.",
+    )
+    anthropic_base_url: str = Field(
+        default="https://api.anthropic.com",
+        alias="ANTHROPIC_BASE_URL",
+        description="Anthropic API base URL for BACKEND_MODE=anthropic.",
     )
 
     # === Multi-Provider Gateway Feature Flags ===
     multi_provider_enabled: bool = Field(
-        default=False, alias="MULTI_PROVIDER_ENABLED",
-        description="Master switch for multi-provider gateway features"
+        default=False,
+        alias="MULTI_PROVIDER_ENABLED",
+        description="Master switch for multi-provider gateway features",
     )
     routing_enabled: bool = Field(
-        default=False, alias="ROUTING_ENABLED",
-        description="Enable routing engine (rule/cost/quality/auto)"
+        default=False,
+        alias="ROUTING_ENABLED",
+        description="Enable routing engine (rule/cost/quality/auto)",
     )
     smart_routing_enabled: bool = Field(
-        default=False, alias="SMART_ROUTING_ENABLED",
-        description="Enable RouteLLM smart routing (lazy-loads routellm)"
+        default=False,
+        alias="SMART_ROUTING_ENABLED",
+        description="Enable RouteLLM smart routing (lazy-loads routellm)",
     )
     failover_enabled: bool = Field(
-        default=True, alias="FAILOVER_ENABLED",
-        description="Enable cross-model failover when all keys are rate-limited"
+        default=True,
+        alias="FAILOVER_ENABLED",
+        description="Enable cross-model failover when all keys are rate-limited",
     )
     compression_enabled: bool = Field(
-        default=False, alias="COMPRESSION_ENABLED",
-        description="Enable agent context compression"
+        default=False,
+        alias="COMPRESSION_ENABLED",
+        description="Enable agent context compression",
     )
 
     # === Provider Key Encryption ===
     provider_key_encryption_secret: Optional[str] = Field(
-        default=None, alias="PROVIDER_KEY_ENCRYPTION_SECRET",
-        description="Secret for Fernet encryption of provider API keys"
+        default=None,
+        alias="PROVIDER_KEY_ENCRYPTION_SECRET",
+        description="Secret for Fernet encryption of provider API keys",
     )
 
     # === Smart Routing Config ===
     smart_routing_strong_model: str = Field(
-        default="claude-sonnet-4-5-20250929", alias="SMART_ROUTING_STRONG_MODEL",
-        description="Model for complex queries in smart routing"
+        default="claude-sonnet-4-5-20250929",
+        alias="SMART_ROUTING_STRONG_MODEL",
+        description="Model for complex queries in smart routing",
     )
     smart_routing_weak_model: str = Field(
-        default="claude-haiku-4-5-20251001", alias="SMART_ROUTING_WEAK_MODEL",
-        description="Model for simple queries in smart routing"
+        default="claude-haiku-4-5-20251001",
+        alias="SMART_ROUTING_WEAK_MODEL",
+        description="Model for simple queries in smart routing",
     )
     smart_routing_threshold: float = Field(
-        default=0.5, alias="SMART_ROUTING_THRESHOLD",
-        description="RouteLLM classification threshold (0.0-1.0)"
+        default=0.5,
+        alias="SMART_ROUTING_THRESHOLD",
+        description="RouteLLM classification threshold (0.0-1.0)",
     )
 
     # === Compression Config ===
     compression_tool_result_max_chars: int = Field(
-        default=2000, alias="COMPRESSION_TOOL_RESULT_MAX_CHARS",
-        description="Max chars before tool_result truncation"
+        default=2000,
+        alias="COMPRESSION_TOOL_RESULT_MAX_CHARS",
+        description="Max chars before tool_result truncation",
     )
     compression_fold_after_turns: int = Field(
-        default=6, alias="COMPRESSION_FOLD_AFTER_TURNS",
-        description="Fold assistant messages older than N turns from end"
+        default=6,
+        alias="COMPRESSION_FOLD_AFTER_TURNS",
+        description="Fold assistant messages older than N turns from end",
     )
 
     # === Cache-Aware Routing ===
     cache_aware_routing_enabled: bool = Field(
-        default=True, alias="CACHE_AWARE_ROUTING_ENABLED",
-        description="When true, routing engine preserves model for cache-active sessions"
+        default=True,
+        alias="CACHE_AWARE_ROUTING_ENABLED",
+        description="When true, routing engine preserves model for cache-active sessions",
     )
 
     # === Multi-Provider DynamoDB Tables ===
@@ -549,13 +603,17 @@ class Settings(BaseSettings):
         default="anthropic-proxy-routing-rules", alias="DYNAMODB_ROUTING_RULES_TABLE"
     )
     dynamodb_failover_chains_table: str = Field(
-        default="anthropic-proxy-failover-chains", alias="DYNAMODB_FAILOVER_CHAINS_TABLE"
+        default="anthropic-proxy-failover-chains",
+        alias="DYNAMODB_FAILOVER_CHAINS_TABLE",
     )
     dynamodb_smart_routing_config_table: str = Field(
-        default="anthropic-proxy-smart-routing-config", alias="DYNAMODB_SMART_ROUTING_CONFIG_TABLE"
+        default="anthropic-proxy-smart-routing-config",
+        alias="DYNAMODB_SMART_ROUTING_CONFIG_TABLE",
     )
 
-    @field_validator("cors_origins", "cors_allow_methods", "cors_allow_headers", mode="before")
+    @field_validator(
+        "cors_origins", "cors_allow_methods", "cors_allow_headers", mode="before"
+    )
     @classmethod
     def parse_list_fields(cls, v: Any) -> List[str]:
         """Parse list fields from comma-separated string or return as-is."""
@@ -585,6 +643,20 @@ class Settings(BaseSettings):
         if v not in valid_envs:
             raise ValueError(f"Environment must be one of {valid_envs}")
         return v
+
+    @model_validator(mode="after")
+    def validate_backend_mode(self):
+        """Validate backend mode has the required credentials."""
+        if self.backend_mode == "openai":
+            if not (self.openai_api_key and self.openai_base_url):
+                raise ValueError(
+                    "BACKEND_MODE=openai requires OPENAI_API_KEY (or BEDROCK_API_KEY) "
+                    "and OPENAI_BASE_URL (or MANTLE_ENDPOINT_URL)."
+                )
+        elif self.backend_mode == "anthropic":
+            if not self.anthropic_api_key:
+                raise ValueError("BACKEND_MODE=anthropic requires ANTHROPIC_API_KEY.")
+        return self
 
 
 @lru_cache()

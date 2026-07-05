@@ -3,6 +3,7 @@ Health check endpoint.
 
 Provides application health status and readiness checks.
 """
+
 import logging
 import time
 from datetime import datetime
@@ -44,6 +45,7 @@ async def health_check():
         "uptime_seconds": uptime_seconds,
         "version": settings.app_version,
         "environment": settings.environment,
+        "backend_mode": settings.backend_mode,
         "services": {
             "bedrock": {
                 "status": "available",
@@ -164,7 +166,9 @@ async def ptc_health_check():
 
             if not image_available:
                 # Try to pull the image automatically
-                logger.info(f"[PTC] Sandbox image not available, attempting auto-pull...")
+                logger.info(
+                    f"[PTC] Sandbox image not available, attempting auto-pull..."
+                )
                 result["image_pull_status"] = "pulling"
                 try:
                     image_available = await sandbox_executor.ensure_image_available()
