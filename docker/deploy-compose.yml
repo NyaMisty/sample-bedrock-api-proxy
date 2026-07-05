@@ -32,6 +32,10 @@ services:
       # --- Backend mode (bedrock | openai | anthropic) ---
       - BACKEND_MODE=${BACKEND_MODE:-anthropic}
 
+      # --- Transparent proxy: relay client x-api-key verbatim to upstream,
+      #     skip proxy auth (DDB/master key). Only with anthropic/openai. ---
+      - TRANSPARENT_PROXY=${TRANSPARENT_PROXY:-false}
+
       # --- Anthropic direct backend (BACKEND_MODE=anthropic) ---
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
