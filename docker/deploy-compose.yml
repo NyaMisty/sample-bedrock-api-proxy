@@ -1,0 +1,173 @@
+# Docker Compose for Anthropic-Bedrock API Proxy deployment on NAS.
+#
+# Layout (see README in deploy dir):
+#   ./sample-bedrock-api-proxy/   fork git repo (source, mounted into container)
+#   ./docker-compose.yml          this file
+#   ./.env                        credentials (not committed)
+#   ./data/                       persistent volumes (dynamodb, dind cache)
+#
+# The image (built by .github/workflows/docker-build.yml and pushed to GHCR)
+# ships the venv + system deps + a copy of the source as a fallback. The
+# fork source is bind-mounted over /app/app, so `git pull` on the host
+# updates the running code without rebuilding the image.
+#
+#   docker compose --profile anthropic up -d
+
+services:
+  api-proxy:
+    image: ghcr.io/nyamisty/sample-bedrock-api-proxy:${IMAGE_TAG:-latest}
+    container_name: anthropic-proxy
+    pull_policy: always
+    ports:
+      - "${PROXY_PORT:-8000}:8000"
+    environment:
+      # --- App / server ---
+      - APP_NAME=Anthropic-Bedrock API Proxy
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HOST=0.0.0.0
+      - PORT=8000
+      - WORKERS=${WORKERS:-2}
+
+      # --- Backend mode (bedrock | openai | anthropic) ---
+      - BACKEND_MODE=${BACKEND_MODE:-anthropic}
+
+      # --- Anthropic direct backend (BACKEND_MODE=anthropic) ---
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+      # --- OpenAI-compatible backend (BACKEND_MODE=openai) ---
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+
+      # --- AWS (always needed for DynamoDB) ---
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-local}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-local}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+
+      # --- DynamoDB Local ---
+      - DYNAMODB_ENDPOINT_URL=http://dynamodb-local:8000
+
+      # --- Auth ---
+      - REQUIRE_API_KEY=${REQUIRE_API_KEY:-true}
+      - MASTER_API_KEY=${MASTER_API_KEY:?MASTER_API_KEY is required}
+
+      # --- Rate limiting ---
+      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-true}
+      - RATE_LIMIT_REQUESTS=${RATE_LIMIT_REQUESTS:-100}
+      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
+
+      # --- DinD for PTC / standalone code execution ---
+      - DOCKER_HOST=tcp://docker:2375
+      - DOCKER_TLS_VERIFY=
+      - PTC_SANDBOX_IMAGE=${PTC_SANDBOX_IMAGE:-python:3.11-slim}
+      - PTC_NETWORK_DISABLED=${PTC_NETWORK_DISABLED:-true}
+      - PTC_MEMORY_LIMIT=${PTC_MEMORY_LIMIT:-256m}
+      - PTC_PIDS_LIMIT=${PTC_PIDS_LIMIT:-64}
+      - PTC_EXECUTION_TIMEOUT=${PTC_EXECUTION_TIMEOUT:-60}
+      - PTC_SESSION_TIMEOUT=${PTC_SESSION_TIMEOUT:-270}
+
+      # --- Feature flags (full Claude feature set) ---
+      - ENABLE_TOOL_USE=true
+      - ENABLE_EXTENDED_THINKING=true
+      - ENABLE_DOCUMENT_SUPPORT=true
+      - ENABLE_PROGRAMMATIC_TOOL_CALLING=true
+      - ENABLE_STANDALONE_CODE_EXECUTION=true
+      - ENABLE_WEB_SEARCH=true
+      - ENABLE_WEB_FETCH=true
+      - PROMPT_CACHING_ENABLED=true
+
+      # --- Web search (Tavily) ---
+      - WEB_SEARCH_PROVIDER=tavily
+      - WEB_SEARCH_API_KEY=${WEB_SEARCH_API_KEY:?WEB_SEARCH_API_KEY is required}
+      - WEB_SEARCH_MAX_RESULTS=${WEB_SEARCH_MAX_RESULTS:-5}
+      - WEB_SEARCH_DEFAULT_MAX_USES=${WEB_SEARCH_DEFAULT_MAX_USES:-10}
+
+      # --- Web fetch ---
+      - WEB_FETCH_MAX_ITERATIONS=${WEB_FETCH_MAX_ITERATIONS:-10}
+
+      # --- Tracing (optional) ---
+      - ENABLE_TRACING=${ENABLE_TRACING:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-anthropic-bedrock-proxy}
+
+    volumes:
+      # Override the image's bundled source with the fork checkout on the host.
+      # `git pull` in ./sample-bedrock-api-proxy then updates the running code.
+      - ./sample-bedrock-api-proxy/app:/app/app:ro
+      - ./sample-bedrock-api-proxy/main.py:/app/main.py:ro
+      - ./sample-bedrock-api-proxy/scripts:/app/scripts:ro
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+      docker:
+        condition: service_healthy
+    networks:
+      - proxy-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Docker-in-Docker — sandbox runtime for PTC / standalone code execution.
+  # ---------------------------------------------------------------------------
+  docker:
+    image: docker:dind
+    container_name: proxy-dind
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=
+    entrypoint: ["dockerd-entrypoint.sh"]
+    command: ["--host=tcp://0.0.0.0:2375"]
+    # dind stores image layer cache + container roots on a sqlite-backed
+    # metadata store; must live on a real filesystem, NOT the shfs fuse overlay
+    # at /mnt/user (sqlite locks are unreliable there → daemon stalls).
+    volumes:
+      - /mnt/cache/sample-bedrock-api-proxy/dind:/var/lib/docker
+    networks:
+      - proxy-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # DynamoDB Local — API keys, usage, model mapping, pricing, beta headers.
+  # ---------------------------------------------------------------------------
+  dynamodb-local:
+    # Pin to 2.5.x: DynamoDB Local 3.x hangs on boto3 requests (botocore sends
+    # Expect: 100-continue which 3.x mishandles). 2.5.x is known-good.
+    image: amazon/dynamodb-local:2.5.2
+    container_name: dynamodb-local
+    ports:
+      - "${DDB_PORT:-8001}:8000"
+    # DynamoDB Local uses sqlite for storage. sqlite4java cannot reliably open
+    # databases on zfs (/mnt/cache) or shfs fuse (/mnt/user) on this Unraid
+    # host — it crashes with "unable to open database file" → boto3 hangs.
+    # Use -inMemory until a stable ext4 volume is available; tables are
+    # recreated on each start by scripts/setup_tables.py, so persistence is
+    # not lost in practice (DDL is fast). Production should use real AWS DDB.
+    command: "-jar DynamoDBLocal.jar -inMemory"
+    volumes:
+      - /mnt/cache/sample-bedrock-api-proxy/dynamodb:/home/dynamodblocal/data
+    networks:
+      - proxy-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/localhost/8000'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+networks:
+  proxy-network:
+    driver: bridge
